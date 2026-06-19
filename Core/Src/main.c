@@ -31,6 +31,7 @@
 #include "Epd_Api.h"
 #include "Uart_OTA.h"
 #include "Uart_RTX.h"
+#include "Esp_Com.h"
 #include "shell.h"
 /* USER CODE END Includes */
 
@@ -113,6 +114,7 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(ESP_RST_GPIO_Port,ESP_RST_Pin,GPIO_PIN_SET);
+  EspCom_Init();
 
 
 
@@ -141,6 +143,7 @@ int main(void)
       UART_DMA_Poll();
       Uart_OTA_Rx();
     }else {
+      EspCom_Poll();
       shellTask(&shell);
 
     }
