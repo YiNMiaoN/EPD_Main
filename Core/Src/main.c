@@ -148,8 +148,6 @@ int main(void)
 
     }
     uint8_t *a ;
-    HAL_UART_Receive(&huart2,a,4,100);
-    HAL_UART_Transmit(&huart1,a,4,100);
 
 
     /* USER CODE END WHILE */
