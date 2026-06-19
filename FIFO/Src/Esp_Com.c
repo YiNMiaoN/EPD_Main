@@ -207,12 +207,12 @@ void EspCom_Poll(void)
 
 void EspCom_SetReady(bool ready)
 {
-    HAL_GPIO_WritePin(ESP_EO_GPIO_Port, ESP_EO_Pin, ready ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(STM32_Ready_GPIO_Port, STM32_Ready_Pin, ready ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 bool EspCom_IsEspReady(void)
 {
-    return HAL_GPIO_ReadPin(ESP_EI_GPIO_Port, ESP_EI_Pin) == GPIO_PIN_SET;
+    return HAL_GPIO_ReadPin(ESP_Ready_GPIO_Port, ESP_Ready_Pin) == GPIO_PIN_SET;
 }
 
 HAL_StatusTypeDef EspCom_Send(uint8_t type, const uint8_t *payload, uint16_t len)

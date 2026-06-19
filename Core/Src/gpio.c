@@ -57,7 +57,7 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, SPI1_DC_Pin|SPI1_RES_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, ESP_EO_Pin|SPI2_NSS_Pin|SPI2_RES_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, STM32_Ready_Pin|SPI2_NSS_Pin|SPI2_RES_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : KEY4_Pin KEY3_Pin */
   GPIO_InitStruct.Pin = KEY4_Pin|KEY3_Pin;
@@ -85,18 +85,18 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : ESP_EO_Pin */
-  GPIO_InitStruct.Pin = ESP_EO_Pin;
+  /*Configure GPIO pin : STM32_Ready_Pin */
+  GPIO_InitStruct.Pin = STM32_Ready_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(ESP_EO_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(STM32_Ready_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : ESP_EI_Pin */
-  GPIO_InitStruct.Pin = ESP_EI_Pin;
+  /*Configure GPIO pin : ESP_Ready_Pin */
+  GPIO_InitStruct.Pin = ESP_Ready_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(ESP_EI_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(ESP_Ready_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI2_NSS_Pin SPI2_RES_Pin */
   GPIO_InitStruct.Pin = SPI2_NSS_Pin|SPI2_RES_Pin;

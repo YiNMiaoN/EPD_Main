@@ -10,11 +10,14 @@
 
 extern Shell shell;
 
-void ref_epd(int argc, char *argv[])
+int ref_epd(int argc, char *argv[])
 {
+    (void)argc;
+    (void)argv;
     shellPrint(&shell, "ref_epd\r\n");
     EPD_HW_Display();
     EPD_HW_Sleep();
+    return 0;
 }
 
 SHELL_EXPORT_CMD(
@@ -42,13 +45,14 @@ static void esp_print_last_frame(void)
     }
 }
 
-void esp_ready(int argc, char *argv[])
+int esp_ready(int argc, char *argv[])
 {
     if (argc >= 2) {
         EspCom_SetReady(strcmp(argv[1], "0") != 0);
     }
 
     shellPrint(&shell, "stm32_ready set, esp_ready=%u\r\n", EspCom_IsEspReady() ? 1 : 0);
+    return 0;
 }
 
 SHELL_EXPORT_CMD(
@@ -58,11 +62,12 @@ SHELL_EXPORT_CMD(
     esp_ready [0|1]
     );
 
-void esp_ping(int argc, char *argv[])
+int esp_ping(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
     shellPrint(&shell, "esp ping tx=%d\r\n", EspCom_Ping());
+    return 0;
 }
 
 SHELL_EXPORT_CMD(
@@ -72,11 +77,12 @@ SHELL_EXPORT_CMD(
     esp_ping
     );
 
-void esp_status(int argc, char *argv[])
+int esp_status(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
     shellPrint(&shell, "esp status tx=%d esp_ready=%u\r\n", EspCom_GetStatus(), EspCom_IsEspReady() ? 1 : 0);
+    return 0;
 }
 
 SHELL_EXPORT_CMD(
@@ -86,10 +92,11 @@ SHELL_EXPORT_CMD(
     esp_status
     );
 
-void esp_cache(int argc, char *argv[])
+int esp_cache(int argc, char *argv[])
 {
     const char *api = argc >= 2 ? argv[1] : "current";
     shellPrint(&shell, "esp cache %s tx=%d\r\n", api, EspCom_GetCache(api));
+    return 0;
 }
 
 SHELL_EXPORT_CMD(
@@ -99,10 +106,11 @@ SHELL_EXPORT_CMD(
     esp_cache [api]
     );
 
-void esp_refresh(int argc, char *argv[])
+int esp_refresh(int argc, char *argv[])
 {
     const char *api = argc >= 2 ? argv[1] : "current";
     shellPrint(&shell, "esp refresh %s tx=%d\r\n", api, EspCom_RefreshApi(api));
+    return 0;
 }
 
 SHELL_EXPORT_CMD(
@@ -112,10 +120,11 @@ SHELL_EXPORT_CMD(
     esp_refresh [api]
     );
 
-void esp_read(int argc, char *argv[])
+int esp_read(int argc, char *argv[])
 {
     const char *api = argc >= 2 ? argv[1] : "daily7d";
     shellPrint(&shell, "esp read %s tx=%d\r\n", api, EspCom_ReadApi(api));
+    return 0;
 }
 
 SHELL_EXPORT_CMD(
@@ -125,11 +134,12 @@ SHELL_EXPORT_CMD(
     esp_read [api]
     );
 
-void esp_last(int argc, char *argv[])
+int esp_last(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
     esp_print_last_frame();
+    return 0;
 }
 
 SHELL_EXPORT_CMD(
