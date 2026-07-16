@@ -16,7 +16,7 @@ uint8_t OTA_Data_Flash[1024];
 uint16_t OTA_Data_Crc16 = 0x00;
 uint16_t OTA_Data_Index = 0x00;
 uint8_t OTA_Data_Realy = 0x00;
-volatile uint32_t Flash_Write_Addr = 0x00;
+volatile uint32_t Flash_Write_Addr = 0x265000;
 
 uint8_t OTA_St_Realy[] = {0x55,0xAA,0x01};
 uint8_t OTA_St_Wait[] = {0x55,0xAA,0x02};

@@ -48,11 +48,11 @@ else ()
     add_compile_options(-Og -g)
 endif ()
 
-include_directories(${includes} Disp/Inc Flash/Inc FIFO/Inc LetterSh/Inc)
+include_directories(${includes} Disp/Inc Flash/Inc FIFO/Inc LetterSh/Inc QWeather/Inc  USB_DEVICE/App USB_DEVICE/Target)
 
 add_definitions(${defines})
 
-file(GLOB_RECURSE SOURCES ${sources} "Disp/Src/*.c" "Disp/Src/*.cpp" "Flash/Src/*.cpp" "FIFO/Src/*.c" "LetterSh/Src/*.c")
+file(GLOB_RECURSE SOURCES ${sources} "Disp/Src/*.c" "Disp/Src/*.cpp" "Flash/Src/*.cpp" "FIFO/Src/*.c" "LetterSh/Src/*.c" "QWeather/Src/*.c" "QWeather/Src/*.cpp" "USB_DEVICE/App/*.c" "USB_DEVICE/Target/*.c")
 
 set(LINKER_SCRIPT $${CMAKE_SOURCE_DIR}/${linkerScript})
 

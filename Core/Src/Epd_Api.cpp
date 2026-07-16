@@ -6,10 +6,12 @@
 #include "Epd.h"
 #include "Flash.h"
 #include "shell.h"
+#include "MainUI.h"
 
 // C++对象
 
 EPD epd;
+MainUI mainUI;
 extern Flash flash;
 
 extern "C" {
@@ -29,7 +31,7 @@ extern "C" {
     }
     void EPD_HW_Display()
     {
-        epd.refresh();
+        mainUI.refresh();
     }
 //Flash操作C接口
     void EPD_Flash_Init(void)

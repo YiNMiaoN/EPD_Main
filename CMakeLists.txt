@@ -49,11 +49,11 @@ else ()
     add_compile_options(-Og -g)
 endif ()
 
-include_directories(Core/Inc Drivers/STM32F4xx_HAL_Driver/Inc Drivers/STM32F4xx_HAL_Driver/Inc/Legacy Drivers/CMSIS/Device/ST/STM32F4xx/Include Drivers/CMSIS/Include Disp/Inc Flash/Inc FIFO/Inc LetterSh/Inc)
+include_directories(Core/Inc Drivers/STM32F4xx_HAL_Driver/Inc Drivers/STM32F4xx_HAL_Driver/Inc/Legacy Drivers/CMSIS/Device/ST/STM32F4xx/Include Drivers/CMSIS/Include USB_DEVICE/App USB_DEVICE/Target Middlewares/ST/STM32_USB_Device_Library/Core/Inc Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc Disp/Inc Flash/Inc FIFO/Inc LetterSh/Inc QWeather/Inc  USB_DEVICE/App USB_DEVICE/Target)
 
 add_definitions(-DDEBUG -DUSE_HAL_DRIVER -DSTM32F401xC)
 
-file(GLOB_RECURSE SOURCES "Core/*.*" "Drivers/*.*" "Disp/Src/*.c" "Disp/Src/*.cpp" "Flash/Src/*.cpp" "FIFO/Src/*.c" "LetterSh/Src/*.c")
+file(GLOB_RECURSE SOURCES "Core/*.*" "Middlewares/*.*" "Drivers/*.*" "USB_DEVICE/*.*" "Disp/Src/*.c" "Disp/Src/*.cpp" "Flash/Src/*.cpp" "FIFO/Src/*.c" "LetterSh/Src/*.c" "QWeather/Src/*.c" "QWeather/Src/*.cpp" "USB_DEVICE/App/*.c" "USB_DEVICE/Target/*.c")
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/STM32F401RCTX_FLASH.ld)
 

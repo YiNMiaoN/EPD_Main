@@ -23,7 +23,7 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
-#include "usb_otg.h"
+#include "usb_device.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -33,6 +33,7 @@
 #include "Uart_RTX.h"
 #include "Esp_Com.h"
 #include "shell.h"
+#include "usbd_cdc_if.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -111,17 +112,15 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM3_Init();
   MX_SPI2_Init();
-  MX_USB_OTG_FS_PCD_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(ESP_RST_GPIO_Port,ESP_RST_Pin,GPIO_PIN_SET);
   EspCom_Init();
 
 
 
-  // EPD_HW_Display();
-  // EPD_HW_Sleep();
-  if(flash_rw) {
 
+  if(flash_rw) {
     EPD_Flash_Init();
     EPD_Flash_Test();
     Uart_Init_DMA();
@@ -137,6 +136,7 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  static uint32_t last_tick = 0;
   while (1)
   {
     if (flash_rw) {
@@ -147,8 +147,6 @@ int main(void)
       shellTask(&shell);
 
     }
-    uint8_t *a ;
-
 
     /* USER CODE END WHILE */
 
