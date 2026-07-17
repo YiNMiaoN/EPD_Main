@@ -4,12 +4,8 @@
 
 #include "QWeather_Icon.h"
 
-#include "Epd.h"
-#include "Flash.h"
+#include "TopInfo_Project.h"
 #include <cstring>
-
-extern EPD epd;
-extern Flash flash;
 
 namespace {
 

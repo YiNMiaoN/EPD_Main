@@ -39,6 +39,9 @@ void EPD::init() {
 }
 
 void EPD::clear() {
+    for (uint32_t i = 0; i < sizeof(EPD_GRam); i++) {
+        EPD_GRam[i] = 0xFF;
+    }
     EPD_Clear();
     HAL_Delay(10);
 }
@@ -120,10 +123,9 @@ void EPD::updata_ui() {
 
 
 void EPD::refresh() {
-
+    EPD_Display(EPD_GRam);
 }
 
 void EPD::sleep() {
-
+    EPD_Sleep();
 }
-

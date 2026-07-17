@@ -150,7 +150,7 @@ if (QWeatherIcon_ReadBitmap("101", QWEATHER_ICON_SIZE_32, icon, sizeof(icon)) ==
 }
 ```
 
-`QWeatherIcon_Draw()` draws into the current EPD GRAM buffer only. Call `EPD_HW_Display()` afterward to refresh the e-paper screen.
+`QWeatherIcon_Draw()` draws into the single project EPD GRAM buffer. Call `EPD_HW_Display()` afterward to refresh the e-paper screen.
 
 ## Preview Options
 

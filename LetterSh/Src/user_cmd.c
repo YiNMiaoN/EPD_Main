@@ -15,7 +15,7 @@ int ref_epd(int argc, char *argv[])
     (void)argc;
     (void)argv;
     shellPrint(&shell, "ref_epd\r\n");
-    EPD_HW_Display();
+    EPD_UI_Refresh();
     EPD_HW_Sleep();
     return 0;
 }

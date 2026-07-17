@@ -6,7 +6,7 @@
 
 #include <cstring>
 
-Flash flash;
+extern Flash flash;
 
 uint16_t unicodeToGBK(uint16_t unicode)
 {

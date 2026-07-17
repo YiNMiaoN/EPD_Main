@@ -23,6 +23,8 @@ The root CMake files are:
 
 The project uses `arm-none-eabi-gcc` and `arm-none-eabi-g++`. Custom include/source directories are explicitly listed in both CMake files. When adding a new module directory, update both files.
 
+The current CMake uses `file(GLOB_RECURSE ...)` for existing source directories. After adding a new source file such as `Core/Src/TopInfo_Project.cpp`, reload/reconfigure CMake in CLion before building; otherwise the existing build directory may link without the new object file and report undefined references to global C++ objects.
+
 At the time this file was written, this shell environment did not have `cmake` or `make` in PATH, so builds could not be verified here. CLion has previously produced artifacts under `cmake-build-debug/`.
 
 ## Important Directories
@@ -33,7 +35,7 @@ Disp/         e-paper display driver, Adafruit_GFX port, font rendering
 Flash/        C++ SPI Flash wrapper
 FIFO/         UART FIFO, USART DMA receive, OTA/Flash write, ESP protocol
 LetterSh/     LetterShell library and user commands
-QWeather/     QWeather icon package reader and EPD draw helper
+QWeather/     QWeather icon package reader
 USB_DEVICE/   CubeMX USB CDC device stack
 Drivers/      HAL/CMSIS
 Middlewares/  ST USB device library
@@ -109,19 +111,48 @@ Disp/Src/Epd.cpp
 Disp/Inc/EPD_Hardware.h
 Disp/Src/EPD_Hardware.cpp
 Core/Inc/Epd_Api.h
+Core/Inc/TopInfo_Project.h
 Core/Src/Epd_Api.cpp
+Core/Src/TopInfo_Project.cpp
 ```
 
-`EPD epd;` is defined globally in `Core/Src/Epd_Api.cpp`.
+Project-wide C++ objects are defined in `Core/Src/TopInfo_Project.cpp`:
+
+```cpp
+Flash flash;
+EPD epd;
+MainUI mainUI(epd);
+```
 
 For C++ code, draw bitmaps directly with:
 
 ```cpp
-extern EPD epd;
+#include "TopInfo_Project.h"
 epd.drawFontBitmap(x, y, bitmap, width, height);
 ```
 
-For C code, use the existing C wrappers in `Epd_Api.h` for init, clear, refresh, sleep, and Flash access.
+For C code, use the existing C wrappers in `Epd_Api.h` for init, clear, display refresh, UI refresh, sleep, and Flash access.
+
+### C++ Object Ownership
+
+The project intentionally uses a small number of global C++ objects. Their declarations live in `Core/Inc/TopInfo_Project.h`, and their definitions live only in `Core/Src/TopInfo_Project.cpp`.
+
+Current object ownership:
+
+```text
+Flash flash          Owns SPI2 Flash access.
+EPD epd              Owns the only e-paper framebuffer.
+MainUI mainUI(epd)   Draws the main UI through the shared EPD object.
+```
+
+Rules:
+
+- Do not define `Flash flash`, `EPD epd`, or `MainUI mainUI` in feature modules.
+- Feature modules that need these objects should include `TopInfo_Project.h`, or use a narrow `extern` only when they only need one object.
+- `MainUI` must not inherit from `EPD`; it holds `EPD&` so the project has one framebuffer.
+- `EPD_HW_Display()` only pushes the current `epd` framebuffer to the panel.
+- `EPD_UI_Refresh()` draws `mainUI` and then refreshes the panel.
+- `QWeatherIcon_Draw()` remains an independent icon drawing API and draws into the shared `epd` framebuffer.
 
 ### External Flash
 
@@ -149,7 +180,7 @@ Global object:
 Flash flash;
 ```
 
-It is defined in `Disp/Src/Font.cpp` and used by font and QWeather modules.
+It is defined in `Core/Src/TopInfo_Project.cpp` and used by font, QWeather, and C wrapper modules.
 
 ## Flash Address Plan
 
@@ -254,7 +285,7 @@ if (QWeatherIcon_Init() == QWEATHER_ICON_OK) {
 }
 ```
 
-`QWeatherIcon_Draw()` is implemented in C++ and directly calls `epd.drawFontBitmap()`. Do not add a C drawing wrapper unless C code really needs it.
+`QWeatherIcon_Draw()` is the independent icon drawing API. It reads the bitmap from Flash and draws into the single project `epd` buffer defined in `TopInfo_Project.cpp`.
 
 ## ESP USART2 Protocol
 

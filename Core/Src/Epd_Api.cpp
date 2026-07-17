@@ -3,16 +3,10 @@
 //
 
 #include "Epd_Api.h"
-#include "Epd.h"
-#include "Flash.h"
 #include "shell.h"
-#include "MainUI.h"
+#include "TopInfo_Project.h"
 
 // C++对象
-
-EPD epd;
-MainUI mainUI;
-extern Flash flash;
 
 extern "C" {
 //墨水屏操作C接口
@@ -30,6 +24,10 @@ extern "C" {
         epd.sleep();
     }
     void EPD_HW_Display()
+    {
+        epd.refresh();
+    }
+    void EPD_UI_Refresh(void)
     {
         mainUI.refresh();
     }

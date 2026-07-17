@@ -5,7 +5,8 @@
 
 
 
-MainUI::MainUI() {
+MainUI::MainUI(EPD &display)
+    : epd(display) {
 
 }
 
@@ -26,7 +27,9 @@ void MainUI::drawList() {
 }
 
 void MainUI::drawNowWeather() {
-
+    QWeatherIcon_Draw("100", QWEATHER_ICON_SIZE_32, 252, 43); //天气图标
+    drawChineseString(252+32+4+18,43,"45℃",FONT_SIZE_16);
+    drawChineseString(252+32+4+18,43+16,"45%",FONT_SIZE_16);
 }
 
 void MainUI::drawHitokoto() {
@@ -43,6 +46,7 @@ void MainUI::drawMainUI() {
 
     drawTime();
     drawList();
+    drawNowWeather();
     drawHitokoto();
 }
 
@@ -50,12 +54,21 @@ void MainUI::drawMainUI() {
 
 void MainUI::updata_ui() {
     drawMainUI();
-    // QWeatherIcon_Draw("306",32,0,0);
 
 }
 
 void MainUI::refresh() {
     updata_ui();
     HAL_Delay(10);
-    EPD_Display(EPD_GRam);
+    epd.refresh();
+}
+
+void MainUI::drawChineseString(int16_t x, int16_t y, const char *text, FontSize size)
+{
+    epd.drawChineseString(x, y, text, size);
+}
+
+void MainUI::drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color)
+{
+    epd.drawLine(x0, y0, x1, y1, color);
 }

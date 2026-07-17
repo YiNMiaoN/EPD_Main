@@ -55,8 +55,8 @@ QWeatherIcon_Status QWeatherIcon_ReadBitmap(const char *code,
                                             uint8_t *bitmap,
                                             uint16_t bitmap_len);
 
-// Draw one icon into the EPD GRAM buffer. Call EPD_HW_Display() afterward
-// to refresh the e-paper screen.
+// Draw one icon into the project EPD GRAM buffer. Call EPD_HW_Display()
+// afterward to refresh the e-paper screen when drawing outside MainUI.
 QWeatherIcon_Status QWeatherIcon_Draw(const char *code,
                                       uint16_t size,
                                       int16_t x,
