@@ -21,7 +21,21 @@ class MainUI {
         void drawTime();
         void drawList();
 
+        void drawVerticalProgress(int16_t x,
+                                  int16_t y,
+                                  int16_t width,
+                                  int16_t height,
+                                  uint8_t percent);
+
         void drawNowWeather();
+
+        void drawWeatherAlert();
+
+        void drawNoWeatherAlert();
+
+        void drawWeatherForecast();
+
+        void drawRainForecast();
 
         void drawHitokoto();
 
