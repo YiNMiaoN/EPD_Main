@@ -26,14 +26,19 @@ void MainUI::drawList() {
     drawChineseString(20,8,"ToDay",FONT_SIZE_24);   //代办标题
     drawLine(20,36,220,36,EPD_BLACK);
 
-    drawChineseString(34,48,"时间",FONT_SIZE_16);
-    drawChineseString(136,48,"日程",FONT_SIZE_16);
+    drawChineseString(14,40,"45",FONT_SIZE_16);
+    drawChineseString(28,40,"60",FONT_SIZE_16);
+    drawVerticalProgress(18, 58, 8, 170, 45);
+    drawVerticalProgress(32, 58, 8, 170, 60);
+    drawChineseString(18,232,"T",FONT_SIZE_16);
+    drawChineseString(32,232,"D",FONT_SIZE_16);
 
-    drawVerticalProgress(48, 72, 28, 100, 45);
-    drawVerticalProgress(150, 72, 28, 100, 60);
-
-    drawChineseString(42,180,"45%",FONT_SIZE_16);
-    drawChineseString(144,180,"60%",FONT_SIZE_16);
+    drawChineseString(56,50,"09:30 例会",FONT_SIZE_16);
+    drawChineseString(56,72,"11:00 报告",FONT_SIZE_16);
+    drawChineseString(56,94,"14:30 项目同步",FONT_SIZE_16);
+    drawChineseString(56,116,"18:00 复盘",FONT_SIZE_16);
+    drawChineseString(56,138,"20:00 阅读",FONT_SIZE_16);
+    drawChineseString(56,160,"22:30 休息",FONT_SIZE_16);
 }
 
 void MainUI::drawVerticalProgress(int16_t x,
@@ -46,7 +51,7 @@ void MainUI::drawVerticalProgress(int16_t x,
     }
 
     int16_t fill_height = (int16_t)((height - 4) * percent / 100);
-    int16_t fill_y = (int16_t)(y + height - 2 - fill_height);
+    int16_t fill_y = (int16_t)(y + 2);
 
     epd.drawRect(x, y, width, height, EPD_BLACK);
     epd.fillRect(x + 2, fill_y, width - 4, fill_height, EPD_BLACK);
@@ -111,9 +116,8 @@ void MainUI::drawHitokoto() {
 
 
 void MainUI::drawMainUI() {
-    drawLine(245,0,245,211,0);//左右内容分割线
+    drawLine(245,0,245,266,0);//左右内容分割线
     drawLine(245,40,400,40,0);//时间天气分割线
-    drawLine(0,211,400,211,0);//提醒事项分割线
     drawLine(0,266,400,266,0);//一言分割线
 
     drawTime();

@@ -133,6 +133,91 @@ epd.drawFontBitmap(x, y, bitmap, width, height);
 
 For C code, use the existing C wrappers in `Epd_Api.h` for init, clear, display refresh, UI refresh, sleep, and Flash access.
 
+### Current MainUI Layout
+
+Main UI drawing lives in:
+
+```text
+Disp/Inc/MainUI.h
+Disp/Src/MainUI.cpp
+```
+
+The current UI is still static placeholder rendering. It is not connected to ESP/weather/todo data yet.
+
+Screen layout:
+
+```text
+Display: 400x300
+
+x=0..244     left todo area
+x=245        vertical divider, y=0..266
+x=246..399   right time/weather area
+y=40         right-side time/weather divider
+y=266        bottom hitokoto divider
+y=267..299   hitokoto area
+```
+
+Current divider drawing:
+
+```cpp
+drawLine(245, 0, 245, 266, EPD_BLACK);
+drawLine(245, 40, 400, 40, EPD_BLACK);
+drawLine(0, 266, 400, 266, EPD_BLACK);
+```
+
+Left todo area:
+
+```text
+Title: "ToDay" at x=20, y=8, FONT_SIZE_24
+Title underline: x=20..220, y=36
+
+Two thin vertical progress bars at the far left:
+  time progress: x=18, y=58, w=8, h=170, placeholder 45
+  todo progress: x=32, y=58, w=8, h=170, placeholder 60
+
+Progress numbers are drawn above the bars.
+Bar labels are drawn below the bars:
+  T = today time progress
+  D = todo progress
+
+Todo text starts at x=56 and currently uses static placeholder rows.
+```
+
+Right time/weather area:
+
+```text
+Top time/date:
+  12:00
+  周四
+  2026-7-15
+
+Current weather:
+  QWeather icon "100" at x=252, y=46, 32x32
+  temp placeholder: 45℃
+  humidity placeholder: 湿45%
+
+Weather alert:
+  drawWeatherAlert() currently draws QWeather icon "900" and text 高温 / 蓝色.
+  drawNoWeatherAlert() is kept for later data logic and draws a no-alert placeholder.
+
+Three-day forecast:
+  local separator line at y=84
+  title 三日预报
+  three placeholder rows with 16x16 QWeather icons and high/low temperature text.
+
+Rain forecast:
+  local separator line at y=168
+  title 降雨 2h
+  placeholder 0.0mm plus a small bar trend graphic.
+```
+
+Bottom hitokoto area:
+
+```text
+y=268: 「行动越快，痛苦越少。」
+y=284: ------切利尼娜·德克萨斯
+```
+
 ### C++ Object Ownership
 
 The project intentionally uses a small number of global C++ objects. Their declarations live in `Core/Inc/TopInfo_Project.h`, and their definitions live only in `Core/Src/TopInfo_Project.cpp`.
