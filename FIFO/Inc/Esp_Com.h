@@ -16,6 +16,13 @@ extern "C" {
 #define ESP_COM_VERSION             0x01
 #define ESP_COM_MAX_PAYLOAD         384
 
+#define ESP_COM_API_CURRENT         "current"
+#define ESP_COM_API_DAILY3D         "daily3d"
+#define ESP_COM_API_MINUTELY5M      "minutely5m"
+#define ESP_COM_API_ALERT           "alert"
+#define ESP_COM_API_HITOKOTO        "hitokoto"
+#define ESP_COM_API_RESPONSE        "response"
+
 #define ESP_COM_CMD_PING            0x01
 #define ESP_COM_CMD_GET_STATUS      0x02
 #define ESP_COM_CMD_GET_CACHE       0x03
@@ -45,8 +52,13 @@ bool EspCom_IsEspReady(void);
 HAL_StatusTypeDef EspCom_Send(uint8_t type, const uint8_t *payload, uint16_t len);
 HAL_StatusTypeDef EspCom_Ping(void);
 HAL_StatusTypeDef EspCom_GetStatus(void);
+// Read ESP-local cache. Callers should check ESP_Ready before business requests.
 HAL_StatusTypeDef EspCom_GetCache(const char *api);
+// Queue HTTPS refresh (current/daily3d/minutely5m/alert/hitokoto).
+// ACK confirms queuing, not completion.
+// Wait for ESP_Ready to recover, then read response and the requested cache.
 HAL_StatusTypeDef EspCom_RefreshApi(const char *api);
+// Check local cache availability only; this does not make a network request.
 HAL_StatusTypeDef EspCom_ReadApi(const char *api);
 
 bool EspCom_HasFrame(void);

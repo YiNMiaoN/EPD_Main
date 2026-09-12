@@ -259,7 +259,7 @@ HAL_StatusTypeDef EspCom_GetCache(const char *api)
     int len;
 
     if (api == NULL) {
-        api = "current";
+        api = ESP_COM_API_CURRENT;
     }
 
     len = snprintf(payload, sizeof(payload), "{\"api\":\"%s\"}", api);
@@ -276,7 +276,7 @@ HAL_StatusTypeDef EspCom_RefreshApi(const char *api)
     int len;
 
     if (api == NULL) {
-        api = "current";
+        api = ESP_COM_API_CURRENT;
     }
 
     len = snprintf(payload, sizeof(payload), "{\"api\":\"%s\"}", api);
@@ -293,7 +293,7 @@ HAL_StatusTypeDef EspCom_ReadApi(const char *api)
     int len;
 
     if (api == NULL) {
-        api = "current";
+        api = ESP_COM_API_CURRENT;
     }
 
     len = snprintf(payload, sizeof(payload), "{\"api\":\"%s\"}", api);
