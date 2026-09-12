@@ -15,12 +15,13 @@ TopInfo 是一个基于 **STM32F401RCTx + ESP8266 + 400×300 墨水屏**的信�
 | 天气图标 | 从外部 Flash 的 QWIC 图标包读取 16×16、32×32 位图 |
 | ESP 通信 | 帧封装、CRC 校验、单字节中断接收、FIFO 和轮询解帧已实现 |
 | 数据接口 | 可请求实时天气、三日预报、分钟降雨、预警和一言 |
+| API 刷新库 | TIM10 计时、手动触发完整刷新流程，含响应匹配和阶段超时；无周期刷新 |
 | 调试控制台 | USART1 LetterShell，支持查询、刷新、查看响应及就绪状态 |
-| 数据驱动显示 | 尚未实现 JSON 业务解析和自动界面更新，屏幕仍为固定示例 |
+| 数据驱动显示 | 一言手动刷新成功后自动更新 MainUI；天气、时间和待办仍为固定示例 |
 | 外部 Flash 写入 | 保留 USART1 DMA 资源写入实验流程，存在已知限制 |
 | USB CDC | 已初始化设备栈，接收数据尚未接入业务 |
 
-当前没有 RTOS，使用裸机主循环。上电会初始化并清空墨水屏，通过命令绘制主界面；不会自动联网刷新数据或将 ESP 返回值显示到屏幕。
+当前没有 RTOS，使用裸机主循环。上电会初始化并清空墨水屏，不自动请求 API；通过命令绘制主界面。`api_refresh hitokoto` 完成并取得可用正文后，自动更新一言并刷新屏幕。
 
 本次版本更新重点：
 
@@ -30,14 +31,18 @@ TopInfo 是一个基于 **STM32F401RCTx + ESP8266 + 400×300 墨水屏**的信�
 - Shell 业务命令发送前检查 ESP 就绪线，并返回实际本地发送状态。
 - 修复长 JSON 被 Shell 格式化缓冲截断的问题。
 - 增加可在 PC 上运行的通信和 Shell 测试。
+- 新增 ApiRefresh 库，区分 ACK 受理、刷新结果和最终缓存，保留失败响应供调试。
+- MainUI 一言接入成功刷新结果，保留两行布局、正文括号和作者前的破折号。
 
 ## 文档导航
 
 | 文档 | 内容 |
 | --- | --- |
-| [ESP通信README.md](ESP通信README.md) | 当前协议、全部 14 个 C/C++ API、业务字段和 Shell 联调 |
+| [ESP通信README.md](ESP通信README.md) | 当前协议、全部 16 个底层 C/C++ API、业务字段和 Shell 联调 |
+| [ApiRefresh/README.md](ApiRefresh/README.md) | 手动刷新库、TIM10 接入、状态/错误及 api_refresh/api_result 命令 |
 | [和风README.md](和风README.md) | QWeather 图标资源格式、Flash 布局及图标接口 |
 | [tests/esp_com/README.md](tests/esp_com/README.md) | PC 主机测试的构建方式和覆盖范围 |
+| [tests/main_ui/README.md](tests/main_ui/README.md) | 一言解析、排版和绘屏触发的主机测试 |
 | [STM32通信协议README.md](STM32通信协议README.md) | 早期 ESP/MQTT 桥接协议背景，业务行为以新版通信文档为准 |
 
 ESP 文档中涉及的 lib/HeFeng、lib/Hitokoto、lib/Stm32Com 和 lib/SystemConfig/AppConfig.h 等路径属于 Net_Node 工程。
@@ -139,7 +144,9 @@ ESP 的 Wi-Fi、和风地址/密钥、位置及一言参数在 Net_Node 工程�
 
 ### 推荐命令顺序
 
-**逐条执行，每次请求后等待响应再运行 esp_last，不要整段连续粘贴。** 当前 ESP 启动后缓存为空，需要主动刷新。
+当前推荐先用 `esp_ping`、稍后 `esp_last` 验证链路，再运行 `api_refresh current`，随后间隔运行 `api_result`，等待 `state=succeeded` 或 `state=failed`。新库会自动完成 ACK 检查、等待 ESP 就绪、读取 response 和目标缓存。`start=0` 仅表示本地受理；失败时查看 error、stage 和原始 payload。无周期刷新，每次仍需手动触发，详见 [刷新库说明](ApiRefresh/README.md)。
+
+下面是仍然可用的**底层逐步调试流程**，应在新库空闲时使用。逐条执行，每次请求后等待响应再运行 esp_last，不要整段连续粘贴。当前 ESP 启动后缓存为空，需要主动刷新。
 
 | 步骤 | 命令 | 预期结果 |
 | --- | --- | --- |
@@ -159,7 +166,9 @@ tx=0 只说明 STM32 本地发送完成；ACK 只说明 ESP 接受请求；刷�
 
 | 命令 | 作用 |
 | --- | --- |
-| ref_epd | 绘制固定主界面、刷新屏幕并休眠 |
+| ref_epd | 绘制主界面（含最近成功的一言）、刷新屏幕并休眠 |
+| api_refresh [api] | 手动启动完整刷新流程，默认 current，不启动周期任务 |
+| api_result | 查询刷新状态、失败阶段及最近匹配响应，不消费结果 |
 | esp_apis | 显示 API 支持范围 |
 | esp_ready | 查看 ESP 就绪输入 |
 | esp_ready 0 / esp_ready 1 | 设置 STM32 就绪输出；不能代替 ESP 联网 |
@@ -172,6 +181,8 @@ tx=0 只说明 STM32 本地发送完成；ACK 只说明 ESP 接受请求；刷�
 
 业务命令在 ESP 就绪线为低时不发送，返回 HAL_BUSY (2)。底层 C 接口不会自动检查 GPIO；EspCom_ReadApi(NULL) 仍默认 current，与 Shell 默认值不同。
 
+ApiRefresh 忙碌期间，所有 ESP 发送命令、`esp_ready 0/1` 和 `ref_epd` 返回 HAL_BUSY；无参数 `esp_ready`、`esp_last` 和 `api_result` 可继续查看状态。手动刷新库启动时可先等待 ESP 就绪，最长等待时间见库配置。
+
 ## 代码结构与运行流程
 
 ~~~text
@@ -179,6 +190,7 @@ Core/                   CubeMX 外设、主循环、C/C++ 桥接和全局对象
 Disp/                   墨水屏驱动、Adafruit_GFX、字库读取、MainUI
 Flash/                  外部 SPI Flash 读写封装
 FIFO/                   ESP 协议、串口缓冲、USART1 DMA 资源写入
+ApiRefresh/             手动刷新状态机、TIM10 时间源、Shell 命令和 coreJSON
 LetterSh/               LetterShell 和项目调试命令
 QWeather/               外部 Flash 天气图标包读取
 USB_DEVICE/             USB CDC 应用和底层配置
@@ -195,10 +207,12 @@ STM32F401RCTX_FLASH.ld   链接脚本
 
 | 模式 | 初始化 | 主循环 |
 | --- | --- | --- |
-| flash_rw = 0（默认） | 墨水屏初始化、清屏、Shell 初始化 | EspCom_Poll()、shellTask(&shell) |
+| flash_rw = 0（默认） | 墨水屏初始化、清屏、Shell、ApiRefresh 初始化并启动 TIM10 中断 | EspCom_Poll()、ApiRefresh_Poll()、EPD_UI_Poll()、shellTask(&shell) |
 | flash_rw = 1（实验） | Flash ID 检查/读测试、USART1 DMA 接收 | UART_DMA_Poll()、Uart_OTA_Rx() |
 
 ESP 接收路径为 USART2 IRQ → HAL_UART_RxCpltCallback → 字节 FIFO → EspCom_Poll → 最近一帧。HAL 接收完成分发入口在 FIFO/Src/Uart_RTX.c，不应在其他文件重复定义。
+
+EspCom_Poll 在接受每条合法帧时调用观察回调，ApiRefresh 复制匹配响应，独立于 esp_last 的最近帧消费。TIM10 回调只调用 ApiRefresh_Tick1ms 累计时间，实际请求与 JSON 检查都在主循环进行。库要求每次 Tick 间隔 1 ms；TIM10 分频和计数值由用户在 CubeMX 配置，本次不调整。
 
 串口帧格式为：
 
@@ -228,6 +242,16 @@ EPD 继承 Adafruit_GFX，持有唯一的 15000 字节单色帧缓冲；MainUI �
 
 主界面左侧为待办和进度条，右侧为日期时间、天气、预警、三日预报及降雨，底部为一言。主要分隔位置为 x=245、y=40 和 y=266；布局实现在 [Disp/Src/MainUI.cpp](Disp/Src/MainUI.cpp)。
 
+### 一言刷新接入
+
+运行 `api_refresh hitokoto` 后，用 `api_result` 查看进度。只有完整流程成功且正文通过检查，`EPD_UI_Poll()` 才更新 MainUI，并自动进行一次整屏刷新，随后休眠。无需再执行 `ref_epd`。原始 `esp_refresh hitokoto` 和 `esp_cache hitokoto` 仍只用于通信调试，不自动更新界面。
+
+排版保留 16 像素字体：首行 `(0,268)` 为 `「正文」`，次行 y=284 为 `——作者`，按含破折号的署名宽度计算 `x = 400 - 宽度`，右边距为 0。中文及破折号按 16 像素、ASCII 按 8 像素计宽。优先采用 `from_who`，缺失、null 或空白时回退到 `from`，仍为空则显示“佚名”，回退署名同样右对齐。超过行宽时按完整 UTF-8 字符裁剪并加省略号，保留右括号；正文和作者前缀之后均可容纳 23 个全宽字（混合 ASCII 按实际字宽计算）。
+
+[HitokotoText.cpp](Disp/Src/HitokotoText.cpp) 使用 coreJSON 校验和提取字段，并解码 JSON 转义。控制字符转为空格，避免破坏两行格式。首次成功前保留示例一言；请求失败、缓存无效或正文为空时保留上次文本。若协议流程成功但正文无效，Shell 输出 `hitokoto UI: invalid cache; previous text retained`；`api_result` 中的 succeeded 仍仅表示协议流程成功。
+
+重画前清理一言区域，避免短句覆盖长句留下旧字；每次刷新前初始化面板，支持上次操作已休眠的情况。此处调用现有阻塞式整屏驱动，只在刷新事务结束后执行，不在 TIM10 或 UART 中断内绘屏。中文字模仍依赖外部 Flash，现有 GBK 渲染器不支持的字符（如多数 emoji）不会显示。上板需确认面板 BUSY 能正常释放。
+
 ### 外部 Flash 地址
 
 | 资源 | 起始地址 | 格式 |
@@ -254,26 +278,31 @@ Uart_OTA.c 的名称沿用旧命名，当前功能实际是通过 USART1 向**�
 
 | 区域 | 已用 | 总量 | 占比 |
 | --- | --- | --- | --- |
-| RAM | 48752 B | 64 KB | 74.39% |
-| Flash | 172600 B | 256 KB | 65.84% |
+| RAM | 49472 B | 64 KB | 75.49% |
+| Flash | 182972 B | 256 KB | 69.80% |
 
 这是当前配置的链接统计，不是运行时栈峰值测量；更改工具链、优化选项或代码后会变化。
 
 PC 主机测试使用本机 GCC，不使用 Arm 交叉编译器。仓库根目录执行以下命令，要求已有 cmake-build-debug 目录：
 
 ~~~powershell
-gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c -o cmake-build-debug/test_esp_com.exe
+gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c ApiRefresh/Src/ApiRefresh.c ApiRefresh/Src/ApiRefresh_Shell.c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_esp_com.exe
 ./cmake-build-debug/test_esp_com.exe
 ~~~
 
 测试已通过，覆盖请求类型/参数/CRC、就绪状态拦截、HAL 返回值、默认 API、接收校验和长 JSON 输出，以及小数温度、无预警、中文一言和空作者等载荷的原样传输。测试源码不参与固件构建。
 
+刷新库测试同时覆盖五类 API 的完整流程、各阶段超时、JSON 控制字段检查、远端失败保留、SEQ 匹配、esp_last 消费互不干扰、忙碌命令拦截以及空闲时不自动发送。Tick 由测试人工推进，不代表真实 TIM10 周期已经测量。
+
+[MainUI 一言测试](tests/main_ui/README.md) 已通过，覆盖正文转义、作者回退、长度边界、括号和破折号、旧内容保留、重复轮询不重刷、面板唤醒与区域清理；测试使用显示替身，不验证实际外部字模或物理屏幕。
+
 本次版本尚未完成更新后固件的全量上板回归。PC 测试不验证真实 UART 时序、ESP HTTPS 成功率、外部 Flash 数据或墨水屏刷新效果。
 
 ## 已知限制
 
-- **界面尚未使用实时数据。** 通信模块只保存载荷，不做 JSON 解析、请求自动调度、时钟同步或待办管理；收到数据不会自动刷新屏幕。
-- **接收只保留最近一帧。** 一次 EspCom_Poll() 中收到多帧也会覆盖；没有完整帧队列、请求序号自动匹配、响应超时或重试机制。Shell 和未来业务层共享帧消费状态。
+- **界面仅一言接入实时数据。** 一言成功刷新后更新屏幕，天气等其他区域仍为示例；未启用周期刷新、时钟同步或待办管理。
+- **接收没有完整帧队列。** 底层只保留最近一帧；ApiRefresh 用观察回调另存当前匹配响应，提供串行请求匹配和超时，但不自动重试，也不保存五类 API 的历史缓存。其他调用方需遵守串口占用约定。
+- **刷新结果依赖 ESP 协议约定。** response 没有绑定刷新请求的事务 ID，8 位 SEQ 会回绕，无法完全排除同 API 旧结果或跨回绕的迟到响应；有效缓存也不保证观测时间最新。
 - **长时间阻塞可能丢字节。** ESP RX FIFO 分配 1024 字节、实际容量 1023；2 Mbps 连续输入时理论上约 5.1 ms 填满。屏幕刷新、日志和延时需要与通信调度协调。当前无专用 UART 错误恢复或半帧超时处理。
 - **载荷上限为 384 字节。** 没有分页/分片重组；分钟降雨和预警只返回可容纳的摘要，count 不一定等于 items 长度。
 - **通用发送有参数前提。** EspCom_Send() 当前不拒绝 payload=NULL 且 len>0 的组合；调用方必须提供有效缓冲。API 名称直接拼入 JSON，不支持任意未转义输入。
@@ -290,4 +319,4 @@ gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc tests/esp_co
 - 保留链接脚本中的 shellCommand 段及 KEEP，否则导出的 Shell 命令可能被链接优化删除。
 - 更新 ESP 业务约定时同步通信 README、名称常量、Shell 支持列表和相关测试，明确 ESP 实现状态与 STM32 显示接入状态。
 
-后续主要工作是完善通信可靠性、解析业务 JSON、建立显示数据模型，并把真实天气和一言接入 MainUI。
+后续主要工作是完善通信可靠性、解析天气 JSON、建立其他显示数据模型，并把真实天气接入 MainUI。

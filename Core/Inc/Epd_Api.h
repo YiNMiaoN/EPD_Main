@@ -19,6 +19,7 @@ extern "C" {
     void EPD_HW_Sleep(void);
     void EPD_HW_Display();
     void EPD_UI_Refresh(void);
+    void EPD_UI_Poll(void);
 
 
     void EPD_Flash_Test(void);

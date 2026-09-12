@@ -36,6 +36,7 @@ static EspCom_Frame esp_last_frame;
 static uint16_t esp_payload_index;
 static uint16_t esp_rx_crc;
 static bool esp_frame_ready;
+static EspCom_FrameObserver esp_frame_observer;
 
 static bool EspCom_RxFifoPush(uint8_t data)
 {
@@ -111,6 +112,9 @@ static void EspCom_AcceptFrame(void)
         }
         esp_last_frame = esp_work_frame;
         esp_frame_ready = true;
+        if (esp_frame_observer != NULL) {
+            esp_frame_observer(&esp_last_frame);
+        }
     }
 }
 
@@ -208,6 +212,16 @@ void EspCom_Poll(void)
 void EspCom_SetReady(bool ready)
 {
     HAL_GPIO_WritePin(STM32_Ready_GPIO_Port, STM32_Ready_Pin, ready ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+void EspCom_SetFrameObserver(EspCom_FrameObserver observer)
+{
+    esp_frame_observer = observer;
+}
+
+uint8_t EspCom_GetTxSequence(void)
+{
+    return esp_seq;
 }
 
 bool EspCom_IsEspReady(void)

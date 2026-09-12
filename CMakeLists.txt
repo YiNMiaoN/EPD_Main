@@ -53,7 +53,12 @@ include_directories(Core/Inc Drivers/STM32F4xx_HAL_Driver/Inc Drivers/STM32F4xx_
 
 add_definitions(-DDEBUG -DUSE_HAL_DRIVER -DSTM32F401xC)
 
+include_directories(ApiRefresh/Inc ApiRefresh/ThirdParty/coreJSON)
+
 file(GLOB_RECURSE SOURCES "Core/*.*" "Middlewares/*.*" "Drivers/*.*" "USB_DEVICE/*.*" "Disp/Src/*.c" "Disp/Src/*.cpp" "Flash/Src/*.cpp" "FIFO/Src/*.c" "LetterSh/Src/*.c" "QWeather/Src/*.c" "QWeather/Src/*.cpp" "USB_DEVICE/App/*.c" "USB_DEVICE/Target/*.c")
+
+file(GLOB API_REFRESH_SOURCES "ApiRefresh/Src/*.c" "ApiRefresh/ThirdParty/coreJSON/core_json.c")
+list(APPEND SOURCES ${API_REFRESH_SOURCES})
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/STM32F401RCTX_FLASH.ld)
 

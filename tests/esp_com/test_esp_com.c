@@ -1,4 +1,5 @@
 #include "Esp_Com.h"
+#include "ApiRefresh.h"
 #include "gpio.h"
 #include "shell.h"
 #include <assert.h>
@@ -14,6 +15,9 @@ int esp_status(int, char **);
 int esp_ready(int, char **);
 int esp_last(int, char **);
 int esp_apis(int, char **);
+int api_refresh(int, char **);
+int api_result(int, char **);
+int ref_epd(int, char **);
 
 UART_HandleTypeDef huart2 = { USART2 };
 static GPIO_PinState ready, stm32_ready;
@@ -108,9 +112,9 @@ static void expect_request(uint8_t type, const char *payload)
     assert(crc16(sent + 2, len + 5) == (((unsigned)sent[7 + len] << 8) | sent[8 + len]));
 }
 
-static void receive_payload(const uint8_t *payload, uint16_t len, int corrupt)
+static void receive_frame(uint8_t type, uint8_t seq, const uint8_t *payload, uint16_t len, int corrupt)
 {
-    uint8_t frame[393] = {0xaa, 0x55, 1, 0x83, 5, (uint8_t)(len >> 8), (uint8_t)len};
+    uint8_t frame[393] = {0xaa, 0x55, 1, type, seq, (uint8_t)(len >> 8), (uint8_t)len};
     memcpy(frame + 7, payload, len);
     uint16_t crc = crc16(frame + 2, len + 5);
     frame[len + 7] = (uint8_t)(crc >> 8);
@@ -119,6 +123,220 @@ static void receive_payload(const uint8_t *payload, uint16_t len, int corrupt)
         *rx_byte = frame[i];
         EspCom_UartRxCpltCallback(&huart2);
     }
+}
+
+static void receive_payload(const uint8_t *payload, uint16_t len, int corrupt)
+{
+    receive_frame(0x83, 5, payload, len, corrupt);
+}
+
+static void tick(unsigned ms)
+{
+    unsigned before = sends;
+    while (ms--) ApiRefresh_Tick1ms();
+    assert(sends == before);
+}
+
+static void reply(uint8_t type, const char *json)
+{
+    receive_frame(type, sent[4], (const uint8_t *)json, (uint16_t)strlen(json), 0);
+    EspCom_Poll();
+    ApiRefresh_Poll();
+}
+
+static void begin_refresh(void)
+{
+    ApiRefresh_Init();
+    ready = GPIO_PIN_SET;
+    tx_status = HAL_OK;
+    assert(ApiRefresh_Start(NULL) == HAL_OK);
+    ApiRefresh_Poll();
+    assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_ACK);
+}
+
+static void begin_result(void)
+{
+    begin_refresh();
+    reply(ESP_COM_RSP_ACK, "{\"api\":\"current\",\"ok\":true,\"refresh\":true}");
+    tick(API_REFRESH_SETTLE_MS);
+    ApiRefresh_Poll();
+    assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_RESULT);
+}
+
+static void expect_failure(ApiRefresh_Error error, ApiRefresh_State stage)
+{
+    const ApiRefresh_Result *r = ApiRefresh_GetResult();
+    assert(r->state == API_REFRESH_FAILED && r->error == error && r->failed_stage == stage);
+    assert(!ApiRefresh_IsBusy());
+    unsigned before = sends;
+    tick(API_REFRESH_FETCH_TIMEOUT_MS);
+    ApiRefresh_Poll();
+    assert(sends == before);
+}
+
+static void test_api_refresh(void)
+{
+    assert(ApiRefresh_Start(NULL) == HAL_ERROR);
+    ApiRefresh_Init();
+    unsigned before = sends;
+    tick(100000);
+    ApiRefresh_Poll();
+    assert(sends == before && ApiRefresh_GetResult()->state == API_REFRESH_IDLE);
+    assert(ApiRefresh_Start("response") == HAL_ERROR);
+    assert(ApiRefresh_Start("daily7d") == HAL_ERROR);
+    assert(ApiRefresh_Start("") == HAL_ERROR);
+
+    const char *apis[] = {"current", "daily3d", "minutely5m", "alert", "hitokoto"};
+    for (unsigned i = 0; i < sizeof(apis) / sizeof(apis[0]); ++i) {
+        ApiRefresh_Init();
+        ready = GPIO_PIN_RESET;
+        before = sends;
+        assert(ApiRefresh_Start(apis[i]) == HAL_OK);
+        ApiRefresh_Poll();
+        assert(sends == before);
+        assert(ApiRefresh_Start("current") == HAL_BUSY);
+        assert(strcmp(ApiRefresh_GetResult()->api, apis[i]) == 0);
+        ready = GPIO_PIN_SET;
+        ApiRefresh_Poll();
+        char json[384], request[40];
+        snprintf(request, sizeof(request), "{\"api\":\"%s\"}", apis[i]);
+        expect_request(ESP_COM_CMD_REFRESH_API, request);
+        assert(EspCom_GetTxSequence() == sent[4]);
+        snprintf(json, sizeof(json), "{\"api\":\"%s\",\"ok\":true,\"refresh\":true}", apis[i]);
+        receive_frame(ESP_COM_RSP_ACK, (uint8_t)(sent[4] + 1), (const uint8_t *)json, (uint16_t)strlen(json), 0);
+        EspCom_Poll();
+        ApiRefresh_Poll();
+        assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_ACK);
+        // The observer retains the matched ACK even if another frame replaces esp_last.
+        receive_frame(ESP_COM_RSP_ACK, sent[4], (const uint8_t *)json, (uint16_t)strlen(json), 0);
+        receive_frame(ESP_COM_RSP_PONG, (uint8_t)(sent[4] + 1), (const uint8_t *)"{}", 2, 0);
+        EspCom_Poll();
+        EspCom_ClearFrame();
+        ApiRefresh_Poll();
+        assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_FINISH);
+        before = sends;
+        tick(API_REFRESH_SETTLE_MS - 1);
+        ApiRefresh_Poll();
+        assert(sends == before);
+        ready = GPIO_PIN_RESET;
+        tick(1);
+        ApiRefresh_Poll();
+        assert(sends == before);
+        ready = GPIO_PIN_SET;
+        ApiRefresh_Poll();
+        expect_request(ESP_COM_CMD_GET_CACHE, "{\"api\":\"response\"}");
+        snprintf(json, sizeof(json), "{\"api\":\"%s\",\"valid\":true,\"ok\":true,\"uptime_ms\":123}", apis[i]);
+        reply(ESP_COM_RSP_CACHE, json);
+        assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_CACHE_READY);
+        ApiRefresh_Poll();
+        expect_request(ESP_COM_CMD_GET_CACHE, request);
+        snprintf(json, sizeof(json), "{\"api\":\"%s\",\"valid\":true,\"text\":\"\xE4\xBD\xA0\xE5\xA5\xBD\",\"from_who\":null}", apis[i]);
+        reply(ESP_COM_RSP_CACHE, json);
+        const ApiRefresh_Result *r = ApiRefresh_GetResult();
+        assert(r->state == API_REFRESH_SUCCEEDED && r->error == API_REFRESH_ERROR_NONE);
+        assert(r->has_frame && strcmp((const char *)r->frame.payload, json) == 0);
+        output_len = 0;
+        assert(api_result(0, NULL) == 0);
+        assert(strstr(output, "state=succeeded") && strstr(output, json));
+        before = sends;
+        tick(100000);
+        ApiRefresh_Poll();
+        assert(sends == before);
+    }
+
+    begin_result();
+    const char failed[] = "{\"api\":\"current\",\"valid\":true,\"ok\":false,\"message\":\"refresh failed; previous cache retained\"}";
+    reply(ESP_COM_RSP_CACHE, failed);
+    expect_failure(API_REFRESH_ERROR_REMOTE_REFRESH, API_REFRESH_WAIT_RESULT);
+    assert(strcmp((const char *)ApiRefresh_GetResult()->frame.payload, failed) == 0);
+
+    const char *bad[] = {
+        "{\"api\":\"hitokoto\",\"valid\":true,\"ok\":true}",
+        "{\"api\":\"current\",\"valid\":true}",
+        "{\"api\":\"current\",\"valid\":true,\"ok\":\"true\"}",
+        "{\"api\":\"current\",\"valid\":true,\"ok\":true,\"ok\":false}",
+        "{\"api\":\"current\",\"nested\":{\"valid\":true,\"ok\":true}}",
+        "{\"api\":\"current\",\"valid\":true,\"ok\":true,}",
+        "[]", "{}", "null"
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        begin_result();
+        reply(ESP_COM_RSP_CACHE, bad[i]);
+        expect_failure(API_REFRESH_ERROR_PROTOCOL, API_REFRESH_WAIT_RESULT);
+    }
+    begin_refresh();
+    reply(ESP_COM_RSP_ACK, "{\"api\":\"current\",\"ok\":false,\"refresh\":false}");
+    expect_failure(API_REFRESH_ERROR_REJECTED, API_REFRESH_WAIT_ACK);
+    begin_refresh();
+    reply(ESP_COM_RSP_ERROR, "{\"ok\":false,\"code\":\"not_ready\"}");
+    expect_failure(API_REFRESH_ERROR_ESP, API_REFRESH_WAIT_ACK);
+    begin_refresh();
+    reply(ESP_COM_RSP_CACHE, "{\"api\":\"current\",\"ok\":true,\"refresh\":true}");
+    expect_failure(API_REFRESH_ERROR_PROTOCOL, API_REFRESH_WAIT_ACK);
+    begin_result();
+    reply(ESP_COM_RSP_CACHE, "{\"api\":\"current\",\"valid\":true,\"ok\":true}");
+    ApiRefresh_Poll();
+    reply(ESP_COM_RSP_CACHE, "{\"api\":\"current\",\"valid\":false}");
+    expect_failure(API_REFRESH_ERROR_INVALID_CACHE, API_REFRESH_WAIT_CACHE);
+
+    // Each timed stage must terminate, including timeouts while Ready stays LOW.
+    for (ApiRefresh_State stage = API_REFRESH_WAIT_READY; stage <= API_REFRESH_WAIT_CACHE; ++stage) {
+        begin_refresh();
+        if (stage == API_REFRESH_WAIT_READY) {
+            ApiRefresh_Init();
+            assert(ApiRefresh_Start(NULL) == HAL_OK);
+        }
+        if (stage >= API_REFRESH_WAIT_FINISH) {
+            reply(ESP_COM_RSP_ACK, "{\"api\":\"current\",\"ok\":true,\"refresh\":true}");
+        }
+        if (stage >= API_REFRESH_WAIT_RESULT) {
+            tick(API_REFRESH_SETTLE_MS);
+            ApiRefresh_Poll();
+        }
+        if (stage >= API_REFRESH_WAIT_CACHE_READY) {
+            reply(ESP_COM_RSP_CACHE, "{\"api\":\"current\",\"valid\":true,\"ok\":true}");
+        }
+        if (stage == API_REFRESH_WAIT_CACHE) ApiRefresh_Poll();
+        assert(ApiRefresh_GetResult()->state == stage);
+        ready = GPIO_PIN_RESET;
+        unsigned timeout = stage == API_REFRESH_WAIT_FINISH ? API_REFRESH_FETCH_TIMEOUT_MS :
+            (stage == API_REFRESH_WAIT_READY || stage == API_REFRESH_WAIT_CACHE_READY ?
+             API_REFRESH_READY_TIMEOUT_MS : API_REFRESH_REPLY_TIMEOUT_MS);
+        tick(timeout - 1);
+        ApiRefresh_Poll();
+        assert(ApiRefresh_IsBusy());
+        tick(1);
+        ApiRefresh_Poll();
+        expect_failure(API_REFRESH_ERROR_TIMEOUT, stage);
+    }
+    ApiRefresh_Init();
+    ready = GPIO_PIN_SET;
+    tx_status = HAL_TIMEOUT;
+    assert(ApiRefresh_Start(NULL) == HAL_OK);
+    ApiRefresh_Poll();
+    expect_failure(API_REFRESH_ERROR_TX, API_REFRESH_WAIT_READY);
+    assert(ApiRefresh_GetResult()->tx_status == HAL_TIMEOUT);
+
+    begin_refresh();
+    before = sends;
+    char *args[] = {"command", "current"};
+    char *set_ready[] = {"esp_ready", "0"};
+    output_len = 0;
+    assert(esp_cache(2, args) == HAL_BUSY && esp_refresh(2, args) == HAL_BUSY);
+    assert(esp_read(2, args) == HAL_BUSY && esp_ping(1, args) == HAL_BUSY);
+    assert(esp_status(1, args) == HAL_BUSY && esp_ready(2, set_ready) == HAL_BUSY);
+    assert(ref_epd(1, args) == HAL_BUSY && api_refresh(2, args) == HAL_BUSY);
+    assert(esp_ready(1, args) == HAL_OK && sends == before);
+    // An ACK parsed before the deadline is still valid when Poll runs later.
+    const char ack[] = "{\"api\":\"current\",\"ok\":true,\"refresh\":true}";
+    tick(API_REFRESH_REPLY_TIMEOUT_MS - 1);
+    receive_frame(ESP_COM_RSP_ACK, sent[4], (const uint8_t *)ack, sizeof(ack) - 1, 0);
+    output_len = 0;
+    assert(esp_last(1, args) == 0);
+    tick(2);
+    ApiRefresh_Poll();
+    assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_FINISH);
+    puts("API refresh workflow tests passed");
 }
 
 int main(void)
@@ -247,5 +465,6 @@ int main(void)
     assert(strstr(output, "hitokoto: refresh + quote"));
     assert(strstr(output, "daily7d: removed"));
     puts("ESP communication and Shell tests passed");
+    test_api_refresh();
     return 0;
 }

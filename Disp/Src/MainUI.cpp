@@ -109,10 +109,14 @@ void MainUI::drawRainForecast() {
 }
 
 void MainUI::drawHitokoto() {
-    drawChineseString(0,268,"「行动越快，痛苦越少。」",FONT_SIZE_16);
-    drawChineseString(200,284,"------切利尼娜·德克萨斯",FONT_SIZE_16);
+    epd.fillRect(0, 268, 400, 32, EPD_WHITE);
+    drawChineseString(0,268,hitokoto.quote,FONT_SIZE_16);
+    drawChineseString(400 - hitokoto.attributionWidth(),284,hitokoto.attribution,FONT_SIZE_16);
 }
 
+bool MainUI::setHitokotoCache(const char *json, std::size_t length) {
+    return HitokotoText_Parse(json, length, hitokoto);
+}
 
 
 void MainUI::drawMainUI() {
@@ -136,6 +140,7 @@ void MainUI::updata_ui() {
 }
 
 void MainUI::refresh() {
+    epd.init(); // The previous display operation may have put the panel to sleep.
     updata_ui();
     HAL_Delay(10);
     epd.refresh();

@@ -3,8 +3,14 @@
 //
 
 #include "Epd_Api.h"
+extern "C" {
 #include "shell.h"
+}
 #include "TopInfo_Project.h"
+#include "ApiRefresh.h"
+#include <cstring>
+
+extern Shell shell;
 
 // C++对象
 
@@ -30,6 +36,25 @@ extern "C" {
     void EPD_UI_Refresh(void)
     {
         mainUI.refresh();
+    }
+
+    void EPD_UI_Poll(void)
+    {
+        static bool handled = false;
+        const ApiRefresh_Result *result = ApiRefresh_GetResult();
+        if (result->state != API_REFRESH_SUCCEEDED) {
+            handled = false;
+            return;
+        }
+        if (handled) return;
+        handled = true;
+        if (!result->has_frame || std::strcmp(result->api, ESP_COM_API_HITOKOTO) != 0) return;
+        if (!mainUI.setHitokotoCache(reinterpret_cast<const char *>(result->frame.payload), result->frame.len)) {
+            shellWriteString(&shell, "hitokoto UI: invalid cache; previous text retained\r\n");
+            return;
+        }
+        mainUI.refresh();
+        epd.sleep();
     }
 //Flash操作C接口
     void EPD_Flash_Init(void)

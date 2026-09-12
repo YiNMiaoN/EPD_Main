@@ -6,6 +6,7 @@
 #define TOPINFO_MAINUI_H
 #include "Epd.h"
 #include "QWeather_Icon.h"
+#include "HitokotoText.h"
 
 class MainUI {
     public:
@@ -16,6 +17,7 @@ class MainUI {
         void updata_ui();
 
         void refresh();
+        bool setHitokotoCache(const char *json, std::size_t length);
 
     private:
         void drawTime();
@@ -43,6 +45,7 @@ class MainUI {
         void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);
 
         EPD &epd;
+        HitokotoText hitokoto;
 };
 
 #endif //TOPINFO_MAINUI_H

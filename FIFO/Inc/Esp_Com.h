@@ -44,6 +44,11 @@ typedef struct {
     uint16_t crc;
 } EspCom_Frame;
 
+// Invoked from EspCom_Poll(), never from the UART ISR. Do not send/poll recursively.
+typedef void (*EspCom_FrameObserver)(const EspCom_Frame *frame);
+void EspCom_SetFrameObserver(EspCom_FrameObserver observer);
+uint8_t EspCom_GetTxSequence(void);
+
 void EspCom_Init(void);
 void EspCom_Poll(void);
 void EspCom_SetReady(bool ready);

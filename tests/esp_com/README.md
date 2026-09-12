@@ -2,10 +2,11 @@
 
 Run from the repository root with a native C compiler (not arm-none-eabi-gcc).
 The stubs replace UART, GPIO, Shell output and display calls; production
-Esp_Com.c and user_cmd.c are compiled without including the STM32 HAL.
+Esp_Com.c, ApiRefresh.c, coreJSON and both Shell command modules are compiled
+without including the STM32 HAL.
 
 ```powershell
-gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c -o cmake-build-debug/test_esp_com.exe
+gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c ApiRefresh/Src/ApiRefresh.c ApiRefresh/Src/ApiRefresh_Shell.c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_esp_com.exe
 ./cmake-build-debug/test_esp_com.exe
 ```
 
@@ -28,4 +29,14 @@ and source text, an escaped quote, string/null authors, unavailable cache and
 failed-refresh payloads. These verify unchanged transport and console output;
 the firmware does not yet parse JSON into display data.
 
-These tests do not simulate ESP HTTP timing or prove UART electrical reliability.
+Refresh workflow tests use manually advanced TIM10 ticks and cover all five
+APIs, idle/completed inactivity (no periodic refresh), no sends from Tick,
+Ready transitions, ACK settling, sequence matching, response/cache validation,
+UTF-8 preservation, malformed/duplicate/nested/wrong-type JSON fields, ESP
+errors, rejected and failed refreshes, invalid cache, transmit failure, and
+timeouts at every waiting stage. They also cover busy command suppression,
+esp_last consumption, multiple frames in one Poll, and an on-time parsed ACK
+processed after the deadline. No HAL_GetTick implementation is linked.
+
+These tests do not measure TIM10's physical interrupt period, simulate actual
+ESP HTTP timing, or prove UART electrical reliability.

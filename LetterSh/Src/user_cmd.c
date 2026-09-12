@@ -5,13 +5,24 @@
 
 #include "Epd_Api.h"
 #include "Esp_Com.h"
+#include "ApiRefresh.h"
 #include "shell.h"
 #include <string.h>
 
 extern Shell shell;
 
+static bool esp_manual_allowed(void)
+{
+    if (ApiRefresh_IsBusy()) {
+        shellWriteString(&shell, "API refresh active; use api_result to inspect progress\r\n");
+        return false;
+    }
+    return true;
+}
+
 int ref_epd(int argc, char *argv[])
 {
+    if (!esp_manual_allowed()) return HAL_BUSY;
     (void)argc;
     (void)argv;
     shellPrint(&shell, "ref_epd\r\n");
@@ -52,6 +63,7 @@ static void esp_print_last_frame(void)
 int esp_ready(int argc, char *argv[])
 {
     if (argc >= 2) {
+        if (!esp_manual_allowed()) return HAL_BUSY;
         if (argc != 2 || (strcmp(argv[1], "0") != 0 && strcmp(argv[1], "1") != 0)) {
             shellWriteString(&shell, "usage: esp_ready [0|1]\r\n");
             return HAL_ERROR;
@@ -73,6 +85,7 @@ SHELL_EXPORT_CMD(
 
 int esp_ping(int argc, char *argv[])
 {
+    if (!esp_manual_allowed()) return HAL_BUSY;
     (void)argc;
     (void)argv;
     HAL_StatusTypeDef tx = EspCom_Ping();
@@ -89,6 +102,7 @@ SHELL_EXPORT_CMD(
 
 int esp_status(int argc, char *argv[])
 {
+    if (!esp_manual_allowed()) return HAL_BUSY;
     (void)argc;
     (void)argv;
     HAL_StatusTypeDef tx = EspCom_GetStatus();
@@ -105,6 +119,7 @@ SHELL_EXPORT_CMD(
 
 static bool esp_business_ready(void)
 {
+    if (!esp_manual_allowed()) return false;
     if (!EspCom_IsEspReady()) {
         shellWriteString(&shell, "ESP not ready (offline or refreshing); command not sent\r\n");
         return false;
