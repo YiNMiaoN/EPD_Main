@@ -9,6 +9,7 @@ STM32 侧 API 刷新流程库，位于 ESP UART 协议层之上。当前仅支�
 | `Inc/ApiRefresh.h` | C/C++ 公共接口、结果结构、状态和超时常量 |
 | `Src/ApiRefresh.c` | 请求串行调度、响应匹配、JSON 控制字段校验 |
 | `Src/ApiRefresh_Shell.c` | `api_refresh`、`api_result` 命令 |
+| `Inc/ApiTime.h`、`Src/ApiTime.c` | NTP 时间结果结构和 ACK 校验，入口为 `api_time` |
 | `ThirdParty/coreJSON/` | MIT 授权的 coreJSON v3.3.0，校验及遍历 JSON，无动态内存分配 |
 
 底层依赖 `FIFO/Inc/Esp_Com.h`。协议与业务载荷见 [ESP 通信文档](../ESP通信README.md)。两个 CMake 文件已注册此目录；重新生成工程时需保留模板中的注册项。Shell 接入单独放在源文件中，移植核心库时可不编译该文件。
@@ -48,6 +49,8 @@ api_refresh hitokoto
 原 `esp_refresh` 仍是单次底层请求，不会启动本库。新流程执行期间，`esp_ping`、`esp_status`、`esp_cache`、`esp_refresh`、`esp_read`、修改就绪输出的 `esp_ready 0/1` 和阻塞绘屏的 `ref_epd` 返回 `HAL_BUSY (2)`。`api_result`、`esp_last`、`esp_apis` 和无参数 `esp_ready` 可继续使用。运行中再次 `api_refresh` 也返回 `HAL_BUSY`，不会覆盖当前任务。
 
 ## TIM10 与主循环
+
+本库也支持独立的手动 NTP 取时，使用同一请求槽和时间源。完整用法、结果字段与测试步骤见 [NTP 时间 API](TIME_README.md)。`api_time` / `ApiRefresh_StartTime()` 发送 READ_API time，成功 ACK 直接结束；不经过天气的 REFRESH/response/cache 流程，`api_refresh time` 不受理。
 
 库将每次 `ApiRefresh_Tick1ms()` 调用视作 1 ms。**TIM10 分频和计数值由用户在 CubeMX 配置，本次只接入中断计时，不修改这两个值。** 实际中断周期不是 1 ms 时，下面的超时和等待时间会按比例偏移。
 
@@ -93,6 +96,7 @@ shellTask(&shell);
 | `void ApiRefresh_Init(void)` | 在 `EspCom_Init()` 后、TIM10 启动前调用一次；清空状态和时间，安装唯一帧观察回调。运行中重调会丢弃当前流程与结果，不作为取消接口使用 |
 | `void ApiRefresh_Tick1ms(void)` | 每 1 ms 从 TIM10 回调调用一次，仅更新时间源 |
 | `HAL_StatusTypeDef ApiRefresh_Start(const char *api)` | `NULL` 默认 current；白名单为上述五类。HAL_OK 仅表示本地受理，HAL_BUSY 表示已有流程，HAL_ERROR 表示未初始化或非法名称。拒绝请求不改变现有结果，合法名称复制到内部缓冲 |
+| `HAL_StatusTypeDef ApiRefresh_StartTime(void)` | 手动发起实时 NTP 取时，复用忙碌检查；HAL_OK 本地受理，HAL_BUSY 已有请求，HAL_ERROR 未初始化 |
 | `void ApiRefresh_Poll(void)` | 紧接 `EspCom_Poll()` 调用，处理匹配帧、Ready 和超时；没有网络阻塞等待，但底层 UART 发送仍调用阻塞 HAL 接口，最长超时参数为 1000 ms |
 | `bool ApiRefresh_IsBusy(void)` | 仅等待阶段返回 true；idle/succeeded/failed 返回 false |
 | `const ApiRefresh_Result *ApiRefresh_GetResult(void)` | 返回库拥有的只读结果地址，不清除结果；收到匹配帧、Poll 推进或下次成功 Start/Init 时会更新，需要长期保存时自行复制 |
@@ -110,10 +114,13 @@ shellTask(&shell);
 | `tx_status` | 最近一次实际发送的 HAL 状态，初始为 HAL_OK；不能单独作为业务成功标志 |
 | `has_frame` | 是否保存过本流程匹配 SEQ 的响应 |
 | `frame` | 最近一条匹配响应，含 type/seq/len/原始 JSON；失败时可能为 ERROR、失败结果，也可能仍为之前 ACK，应结合 failed_stage 判断 |
+| `has_time`、`time` | 本次 time ACK 是否解析成功及 ApiTime 字段；仅 succeeded 且 has_time=true 时读取，下次受理的请求会清空 |
 
-结果中仅有一个帧副本，成功时保存最终目标缓存，不同时保存三条响应或五类 API 的历史缓存。载荷仍限制为 384 字节。`api_result` 分段输出元数据与原始载荷，避免 Shell 128 字节格式化缓冲截断。
+结果中仅有一个帧副本，天气/一言成功时保存最终目标缓存，time 成功时保存 ACK；不同时保存历史请求结果。载荷仍限制为 384 字节。`api_result` 分段输出元数据与原始载荷，避免 Shell 128 字节格式化缓冲截断。
 
 ## 流程与判断
+
+以下表格描述天气和一言刷新。取时仅经过 idle -> wait_ready -> wait_ack -> succeeded/failed，不要求观察 Ready LOW 或恢复 HIGH；匹配的成功 ACK 本身就是取时结果。
 
 | 状态 | 动作与转移条件 |
 | --- | --- |
@@ -143,6 +150,7 @@ JSON 先通过 coreJSON 语法校验，再仅遍历顶层字段；api 必须是�
 | `API_REFRESH_REPLY_TIMEOUT_MS` | 3000 | wait_ack、wait_result、wait_cache |
 | `API_REFRESH_FETCH_TIMEOUT_MS` | 60000 | wait_finish，从 ACK 被处理后开始 |
 | `API_REFRESH_SETTLE_MS` | 100 | ACK 后查询 response 前的最短间隔 |
+| `API_TIME_REPLY_TIMEOUT_MS` | 10000 | 仅 NTP 的 wait_ack，覆盖服务器等待及 DNS 等耗时 |
 
 使用无符号时间差处理计数回绕。到达阶段超时时限即失败，不无限等待；超时由主循环检查，长时间阻塞主循环会推迟报告。若完整帧已在时限内由 EspCom_Poll 解析并复制，即使稍后才调用 ApiRefresh_Poll 处理，仍按解析时间判断；UART 字节刚到达但尚未解帧不算已收到完整响应。
 

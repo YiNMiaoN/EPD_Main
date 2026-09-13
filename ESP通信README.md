@@ -2,7 +2,7 @@
 
 本文档说明本工程中 STM32F401RCTx 与 ESP 模块之间的 UART 通信方式。工程由 STM32CubeMX 生成，使用 CLion/CMake 编译；ESP 通信代码主要位于 `FIFO/Inc/Esp_Com.h` 和 `FIFO/Src/Esp_Com.c`。
 
-本文于 2026-09-12 根据 Net_Node 项目的新版 ESP8266 对接文档同步业务约定。第 7 节是全部 16 个底层公开 C/C++ 接口的调用参考，第 11 节是接入示例，第 12 节说明 STM32 侧实现限制。完整手动刷新流程已封装到 [ApiRefresh 库](ApiRefresh/README.md)，使用 TIM10 计时，当前不启用周期刷新。本仓库是 TopInfo STM32 工程；文中 `lib/Stm32Com/`、`lib/HeFeng/`、`lib/Hitokoto/`、`lib/SystemConfig/AppConfig.h`、`src/main.cpp` 和 `ESP开发README.md` 均指 ESP 的 Net_Node 工程文件，不在当前仓库内。ESP 配置值按提供的文档记录，尚未通过本次上板验证。
+本文于 2026-09-13 根据新版 Net_Node 对接文档同步 NTP 时间约定。本仓库是 TopInfo STM32 工程，ESP 固件属于独立 Net_Node 工程；文中 `lib/Stm32Com/`、`lib/HeFeng/`、`lib/SystemConfig/AppConfig.h`、`src/main.cpp` 和 ESP开发README.md 均指 ESP 侧文件。STM32 当前有 16 个底层公开接口，另有 [ApiRefresh 库](ApiRefresh/README.md)。新增时间请求、解析和完整联调步骤见 [NTP 时间 API](ApiRefresh/TIME_README.md)。本次只接入取时，尚未接入 RTC、时间显示或局部刷新。
 
 当前 ESP 通过 HTTPS 直连和风及一言，不使用 MQTT；已接入实时天气 `current`、三日预报 `daily3d`、分钟降雨 `minutely5m`、天气预警 `alert` 和一言 `hitokoto`。分钟降雨使用 `lib/SystemConfig/AppConfig.h` 中的 `QWEATHER_MINUTELY_LOCATION`（经度,纬度），当前已配置为 `117.65,24.50`。调试与通信共用 UART0，通过 `DEBUG_LOG_ENABLED` 开关控制，当前关闭。
 
@@ -25,15 +25,13 @@ FIFO/Inc/Esp_Com.h       ESP 通信协议接口和命令定义
 FIFO/Src/Esp_Com.c       ESP UART 收发、帧解析、CRC 校验
 FIFO/Src/Uart_RTX.c      HAL_UART_RxCpltCallback 分发入口
 LetterSh/Src/user_cmd.c  Letter Shell 中的 ESP 调试命令
-ApiRefresh/             手动刷新流程、TIM10 计时、结果查询命令
 ```
 
-当前主循环在 `flash_rw == 0` 时运行 ESP 通信和手动刷新库。以下省略外设、显示和 Shell 初始化；TIM10 启动及回调见 ApiRefresh README：
+当前主循环在 `flash_rw == 0` 时运行 ESP 通信、请求状态机与一言显示处理。以下省略外设和 TIM10 启动，完整初始化见 ApiRefresh README：
 
 ```c
 EspCom_Init();
 ApiRefresh_Init();
-// Start TIM10 interrupts after initialization; each Tick must represent 1 ms.
 
 while (1) {
     EspCom_Poll();
@@ -359,7 +357,7 @@ ESP 建议先响应 ACK：
 
 ### READ_API
 
-当前直连模式下，READ_API 仅检查 ESP 本地缓存，不调用 MQTT 或 HTTP。有缓存时返回 `ACK`、`refresh:false`，随后用 GET_CACHE 获取数据；无缓存时返回 `ERROR/request_failed`。下面 daily3d 的 ACK 示例仅在已成功刷新并填入缓存时成立。
+当前直连模式下，天气和一言的 READ_API 仅检查 ESP 本地缓存，不调用 MQTT 或 HTTP。有缓存时返回 `ACK`、`refresh:false`，随后用 GET_CACHE 获取数据；无缓存时返回 `ERROR/request_failed`。下面 daily3d 的 ACK 示例仅在已成功刷新并填入缓存时成立。`READ_API time` 为实时 NTP 查询，成功时直接在 ACK 中返回时间，不使用缓存，详见下文。
 
 STM32 发送：
 
@@ -385,6 +383,7 @@ ESP 建议响应：
 | `minutely5m` | 分钟级降水 | 已接入 `/v7/minutely/5m`，返回描述及单帧摘要；需配置经纬度 |
 | `alert` | 天气预警 | 已接入 `/v7/warning/now`，返回总数和预警摘要；空数组表示无预警 |
 | `hitokoto` | 一言 | 已接入 `v1.hitokoto.cn`，返回句子、出处和作者 |
+| `time` | 实时网络时间 | 不使用缓存；仅支持 `READ_API time`，直接返回本次 NTP 取时结果 |
 | `airquality` | 空气质量 | UART 缓存返回暂未展开 |
 | `indices` | 生活指数 | UART 缓存返回暂未展开 |
 | `sun` | 日出日落 | UART 缓存返回暂未展开 |
@@ -399,6 +398,47 @@ ESP 建议响应：
 ```
 
 `GET_STATUS` 查询 ESP 自身联网等状态；`EspCom_GetCache("status")` 查询独立缓存，当前未填入数据，返回 `valid:false`、`cache not available`。已实现但尚未填入的其他缓存也返回此消息；未知 API 返回 `unknown cache api`。`status`、`response` 不支持 REFRESH_API；READ_API 仅在其本地缓存存在时成功。HAL_OK 始终只代表 STM32 本地发送成功。
+
+### 实时网络时间 time
+
+STM32 使用 `EspCom_ReadApi("time")` 或 Shell 命令 `esp_read time`，
+发送 TYPE=0x05、Payload=`{"api":"time"}`。每次请求都调用
+`NTPClient::forceUpdate()` 向服务器取时，不使用自动更新间隔或上次同步值。
+不需要 `esp_refresh time` 或 `esp_cache time`；这两个命令均返回
+`ERROR/request_failed`，提示使用 READ_API。
+
+请求受理后 IO5 拉低，NTP 完成后恢复联网就绪状态。成功时只发送一帧
+`ACK (0x84)`，SEQ 与请求一致，时间在 ACK 顶层字段中；没有提前发送的排队 ACK，
+也不写入 `time` 或 `response` 缓存，不再发送 CACHE 帧。
+
+```json
+{"ok":true,"api":"time","refresh":false,"realtime":true,"unix_time":1799798400,"utc_offset":28800,"date":"2027-01-13","time":"08:00:00","weekday":3}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `unix_time` | UTC Unix 秒时间戳，未叠加时区偏移 |
+| `utc_offset` | 本地时区相对 UTC 的偏移秒数，默认 28800，即 UTC+8 |
+| `date` | 本地日期，`YYYY-MM-DD` |
+| `time` | 本地时间，`HH:MM:SS`，24 小时制 |
+| `weekday` | 本地星期，0=星期日，1=星期一，…，6=星期六 |
+| `realtime` / `refresh` | true / false，表示直接取时，不是天气缓存刷新 |
+
+配置在 `lib/SystemConfig/AppConfig.h`：`NTP_SERVER=ntp.aliyun.com`，
+`NTP_UTC_OFFSET_SECONDS=28800`。修改后重新编译烧录，使用 UDP 123 端口。
+ESP 不在启动时或后台自动校时；STM32 收到时间后可设置自身 RTC，日常走时由
+STM32 维护，需重新校时再发送命令。
+
+离线或忙碌返回 `ERROR/not_ready`。NTP 超时、无效时间或取时失败返回
+`ERROR/request_failed`、`message="NTP time request failed"`，不携带旧时间。
+NTPClient 收包等待约 1 秒，DNS 查询和发送还会增加耗时。STM32 需保持
+`EspCom_Poll()` 运行并等待 ACK/ERROR，不能把本地 TX 成功或 IO5 恢复当作取时成功。
+该请求同步执行，期间串口命令处理会延后，不要连续发送命令。
+
+联调：先确认就绪，执行 `esp_read time`，等待新响应后执行 `esp_last`，
+检查 TYPE=0x84、api=time、ok=true，并从同一帧读取日期时间。
+
+STM32 已提供跟踪请求的入口 `api_time` / `ApiRefresh_StartTime()`，随后用 `api_result` 查看解析结果；此方式自动匹配 SEQ，等待 Ready 最多 15 秒、等待时间 ACK 最多 10 秒，失败保留原始响应，不自动重试。`has_time=true` 且 state=succeeded 才能读取结果结构。原 `esp_read time` 仍是原始调试命令，不填入库结果。时间获取不更新 MainUI，详见 [TIME_README](ApiRefresh/TIME_README.md)。
 
 ### 一言缓存 hitokoto
 
@@ -443,9 +483,8 @@ STM32 联调顺序：
 
 三日预报已替代七日预报入口。旧名称 `daily7d` 不再注册：GET_CACHE 返回
 `unknown cache api`，REFRESH_API/READ_API 返回 `request_failed`。STM32 端应改为
-显式使用 `daily3d`。当前 STM32 Shell 的 `esp_read` 无参默认值已更新为 `daily3d`；
-底层 C 接口 `EspCom_ReadApi(NULL)` 仍默认 `current`。传入旧字符串不会自动改名，
-ESP 会按上述约定返回错误。
+显式使用 `daily3d`。当前 STM32 Shell 的 `esp_read` 无参默认 daily3d，
+底层 `EspCom_ReadApi(NULL)` 默认 current，调用时间接口请显式传 time。
 
 请求为 `{QWEATHER_BASE_URL}/weather/v1/daily/24.62/118.06?key={QWEATHER_API_KEY}&days=3&localTime=true`。
 以下配置均位于 `lib/SystemConfig/AppConfig.h`：
@@ -567,7 +606,7 @@ GET_CACHE alert 返回 `api`、`valid`、`source_update_time`、`count`、`items
 | `PONG (0x81)` | 链路响应，可含 `ok`、`uptime_ms` |
 | `STATUS (0x82)` | `ok`、`wifi`、`mqtt`、`stm32_ready`、`uptime_ms` |
 | `CACHE (0x83)` | `valid`、`api` 及业务字段；无效缓存不能用于更新界面 |
-| `ACK (0x84)` | `ok`、`api`、`refresh`；确认请求受理，不代表天气数据已更新 |
+| `ACK (0x84)` | `ok`、`api`、`refresh`；天气刷新仅确认受理；`time` 的 ACK 直接携带成功获取的时间 |
 | `ERROR (0x85)` | `code`、`message`；这是 ESP 业务/协议错误，不是 HAL 返回码 |
 
 `STATUS` 示例中的 `stm32_ready` 是 ESP 读取 STM32 状态线的结果；STM32 读取 ESP 就绪线要调用 `EspCom_IsEspReady()`，不要将二者混淆。
@@ -596,19 +635,6 @@ GET_CACHE alert 返回 `api`、`valid`、`source_update_time`、`count`、`items
 
 头文件自带 `extern "C"` 保护，C 和 C++ 均可直接包含。模块固定操作全局 `huart2` 和工程 GPIO，不支持传入其他 UART 实例。发送、轮询和取帧 API 按当前裸机主循环使用；没有互斥锁或多任务重入保护，不应从多个任务/中断同时调用。中断中只运行第 7.11 节的接收回调。
 
-`Esp_Com.h` 提供业务名称宏 `ESP_COM_API_CURRENT`、`ESP_COM_API_DAILY3D`、`ESP_COM_API_MINUTELY5M`、`ESP_COM_API_ALERT`、`ESP_COM_API_HITOKOTO` 和 `ESP_COM_API_RESPONSE`。它们分别对应 `current`、`daily3d`、`minutely5m`、`alert`、`hitokoto`、`response`，用于传给现有业务请求函数，不增加新的命令类型。
-
-一言调用形式如下，需按第 6 节顺序分别调用并等待响应：
-
-```c
-EspCom_RefreshApi(ESP_COM_API_HITOKOTO);  // Queue a new quote fetch
-EspCom_GetCache(ESP_COM_API_RESPONSE);   // Inspect completed refresh result
-EspCom_GetCache(ESP_COM_API_HITOKOTO);   // Read quote/source/nullable author
-EspCom_ReadApi(ESP_COM_API_HITOKOTO);    // Check cache only; does not fetch
-```
-
-上述底层接口原样收发 JSON。当前应用层已将 `api_refresh hitokoto` 的成功结果接入 MainUI，保留正文括号和作者前的破折号；原始 esp_* 调试命令不触发绘屏。显示解析区分 `from_who` 的字符串和 `null`，按 UTF-8 字符及字宽处理文本，不能将 `max_length=23` 当作 23 字节。详见项目 README 的一言刷新接入章节。
-
 | 接口 | 主要作用 |
 | --- | --- |
 | `EspCom_Init` | 初始化协议状态，拉高 STM32 就绪线并启动接收 |
@@ -620,13 +646,13 @@ EspCom_ReadApi(ESP_COM_API_HITOKOTO);    // Check cache only; does not fetch
 | `EspCom_GetStatus` | 请求 ESP 状态 |
 | `EspCom_GetCache` | 请求 ESP 本地缓存 |
 | `EspCom_RefreshApi` | 请求 ESP 通过 HTTPS 刷新指定 API |
-| `EspCom_ReadApi` | 检查 ESP 本地指定 API 缓存，不访问网络 |
+| `EspCom_ReadApi` | 天气和一言检查本地缓存；`time` 实时请求 NTP 并直接返回时间 |
 | `EspCom_HasFrame` | 查询是否有已解析且未清除的帧 |
 | `EspCom_GetLastFrame` | 将最近一帧复制给调用方 |
 | `EspCom_ClearFrame` | 清除帧可用标志 |
 | `EspCom_UartRxCpltCallback` | USART2 接收完成回调入口 |
-| `EspCom_SetFrameObserver` | 注册唯一合法帧观察回调，在 Poll 中逐帧调用 |
-| `EspCom_GetTxSequence` | 查询最近一次底层分配的发送序号 |
+| `EspCom_SetFrameObserver` | 注册唯一合法帧观察回调，当前由 ApiRefresh 使用 |
+| `EspCom_GetTxSequence` | 获取最近一次分配的发送序号，供请求匹配使用 |
 
 ### 7.2 接收数据结构 `EspCom_Frame`
 
@@ -760,9 +786,9 @@ HAL_StatusTypeDef EspCom_ReadApi(const char *api);
 | --- | --- | --- | --- |
 | `EspCom_GetCache(api)` | `0x03` | 读取 ESP 已有本地缓存，不触发后端刷新 | `CACHE (0x83)` |
 | `EspCom_RefreshApi(api)` | `0x04` | 请求 ESP 排队执行指定 API 的 HTTP 刷新 | `ACK (0x84)` |
-| `EspCom_ReadApi(api)` | `0x05` | 检查 ESP 本地缓存，不发起网络请求 | `ACK (0x84)` |
+| `EspCom_ReadApi(api)` | `0x05` | 天气和一言检查缓存；`time` 实时请求 NTP | `ACK (0x84)` |
 
-三者都发送 `{"api":"名称"}`，返回值均为本地发送状态，不直接返回天气数据。后两者收到 ACK 后，仍需后续 `GetCache` 读取业务缓存。
+三者都发送 `{"api":"名称"}`，函数返回值均为本地发送状态，不直接返回业务数据。天气和一言收到 ACK 后，仍需后续 `GetCache` 读取业务缓存；`time` 直接读取 ACK 的时间字段。
 
 封装细节与限制：
 
@@ -780,7 +806,7 @@ EspCom_ReadApi("daily3d");     // Check local cache; fails if not populated
 EspCom_ReadApi(NULL);          // current, not daily3d
 ```
 
-这些是独立调用形式的速查，不应作为连续突发发送的业务流程。C 函数 `EspCom_ReadApi(NULL)` 默认 `current`；当前 STM32 Shell 的 `esp_read` 无参默认值为 `daily3d`，一言请显式传入 `hitokoto`。
+这些是独立调用形式的速查，不应作为连续突发发送的业务流程。C 函数 `EspCom_ReadApi(NULL)` 默认 `current`；当前 STM32 Shell 的无参默认值为 `daily3d`，取时请显式传入 `ESP_COM_API_TIME` / `time`。
 
 ### 7.9 帧查询与读取
 
@@ -830,25 +856,11 @@ USART2_IRQHandler                         Core/Src/stm32f4xx_it.c
 
 不要在其他文件再次定义 `HAL_UART_RxCpltCallback()`。若调整分发入口，要保留 USART1 原有分支。当前回调忽略 FIFO 满时的失败以及 HAL 重启接收的返回值，异常恢复限制见第 12 节。
 
-### 7.12 帧观察与发送序号
-
-```c
-typedef void (*EspCom_FrameObserver)(const EspCom_Frame *frame);
-void EspCom_SetFrameObserver(EspCom_FrameObserver observer);
-uint8_t EspCom_GetTxSequence(void);
-```
-
-`SetFrameObserver` 替换单一观察回调，传 NULL 可取消。每条通过版本/CRC 校验的帧写入最近帧槽之后，在 `EspCom_Poll()` 内同步调用回调，绝不从 UART 中断调用。frame 指向内部最近帧，需保留时立即复制；不得在回调中递归轮询或发送。注册本身不清除最近帧，也不回放此前收到的帧。
-
-`GetTxSequence` 返回最近分配的 8 位序号，初始化为 0，首次正常封装请求为 1，溢出回绕为 0。应在一次发送返回 HAL_OK 后立即读取，期间不可插入其他发送；HAL 发送失败也可能已经分配序号，因此该查询不能证明发送成功。底层不会自动替调用方匹配响应。
-
-`ApiRefresh_Init()` 安装自己的观察回调，结合发送序号复制等待阶段的匹配帧。在本库使用期间不要替换回调；它与 `esp_last` 的帧标志独立，因此 `esp_last` 清标志不会抢走库已复制的响应。完整所有权约定见 ApiRefresh README。
-
 ## 8. Shell 调试命令
 
-工程通过 USART1 运行 Letter Shell，可直接测试 ESP 通信。命令定义在 `LetterSh/Src/user_cmd.c`。
+当前固件另有 `api_time`、`api_refresh [api]`、`api_result` 和 `esp_apis`。api_time 实时取时并解析 ACK；api_refresh 仅支持原五类天气/一言刷新，不接受 time。所有托管请求期间，原 esp_* 发送命令、修改 Ready 输出和 ref_epd 均返回 HAL_BUSY；无参数 esp_ready、esp_last 与 api_result 仍可使用。底层 C 发送函数不自动管理此占用。
 
-新完整流程命令定义在 `ApiRefresh/Src/ApiRefresh_Shell.c`：执行 `api_refresh [api]` 手动启动，默认 current；随后间隔执行 `api_result`，查看 state/error/stage 和原始响应。start=0 只表示 STM32 受理，最终以 state=succeeded/failed 为准。库会自行读取 response 和目标缓存，无需手工补发。流程期间下列 ESP 发送命令、esp_ready 0/1 和 ref_epd 均返回 HAL_BUSY；只读调试命令仍可使用。
+工程通过 USART1 运行 Letter Shell，可直接测试 ESP 通信。命令定义在 `LetterSh/Src/user_cmd.c`。
 
 ```text
 esp_ready [0|1]      有参数时设置 STM32_Ready，并打印 ESP_Ready 状态
@@ -856,9 +868,8 @@ esp_ping             发送 PING
 esp_status           发送 GET_STATUS
 esp_cache [api]      发送 GET_CACHE，默认 api=current
 esp_refresh [api]    发送 REFRESH_API，默认 api=current
-esp_read [api]       检查本地缓存，默认 api=daily3d，不访问网络
+esp_read [api]       默认 daily3d；time 实时获取 NTP，其他支持 API 检查缓存
 esp_last             轮询、打印最近一帧并清除帧可用标志
-esp_apis             显示当前 ESP API 支持范围、默认值和刷新流程
 ```
 
 典型调试流程：
@@ -877,13 +888,9 @@ esp_last
 
 `HAL_UART_Transmit()` 返回 `0` 表示 `HAL_OK`。
 
-`esp_cache`、`esp_refresh`、`esp_read` 发送前检查 ESP 就绪线，低电平时不发送并返回 `HAL_BUSY (2)`。`esp_ping`、`esp_status` 保留诊断用途，不做 Ready 低电平拦截，但同样检查 ApiRefresh 是否忙碌。ESP 刷新时可能延后处理原始诊断请求，不应反复灌入命令。五个发送命令未被拦截时均将实际 HAL 状态作为 Shell 返回值，`Return: 0` 不代表 ESP 业务执行成功。底层 `EspCom_*` API 不隐式检查就绪线或 ApiRefresh 占用，C/C++ 调用者仍需自行判断。
-
-`esp_last` 将帧信息、载荷、换行分开输出，载荷通过 `shell.write()` 按 `frame.len` 发送，避免被 `shellPrint()` 的 128 字节格式化缓冲截断。
-
 每条请求命令只发送，不等待 ESP 响应。发送后等待对端返回、让主循环继续轮询，再运行 `esp_last`；不要一次粘贴全部命令并假定每次 `esp_last` 都能立即读到对应响应。`esp_last` 成功打印后会消费帧标志，再执行一次可能显示 `no esp frame`。
 
-`esp_ready` 无参数时仅读取并打印 ESP 就绪状态，不修改 PB0。带参数时只接受一个 `0` 或 `1`，设置后打印 STM32 设置值及 ESP 当前就绪状态；非法参数返回 `HAL_ERROR (1)`，不改变 GPIO。它没有读取 PB0 实际电平的功能。
+`esp_ready` 无参数时仅读取并打印 ESP 就绪状态，不修改 PB0，也没有查询 PB0 电平的功能。虽然当前打印文本含 `stm32_ready set`，无参数调用并没有执行设置。带参数时源码只将字符串 `"0"` 解释为低，其他字符串均解释为高，联调请明确使用 `0` 或 `1`。
 
 若业务主循环已经自动读取并清除最近帧，Shell 的 `esp_last` 可能读不到该帧；二者使用的是同一个接收槽，不是两份独立缓存。
 
@@ -961,7 +968,7 @@ CRC    = CRC16-CCITT(seed=0xFFFF)
 
 ### 11.1 初始化和主循环位置
 
-当前工程已经在 `main.c` 中完成 GPIO、USART2、NVIC 初始化并调用 `EspCom_Init()`，默认模式也已接入 ApiRefresh 和 TIM10。完整刷新应调用 `ApiRefresh_Start()`；下述是底层单次请求/消费示例，只能在 ApiRefresh 空闲时使用，不要重复初始化 UART 或重复定义 HAL 回调。
+当前工程已经在 `main.c` 中完成 GPIO、USART2、NVIC 初始化并调用 `EspCom_Init()`，通常只需增加应用层的请求调度和响应消费，不要再重复初始化 UART 或重复定义 HAL 回调。
 
 从其他工程移植时，相关顺序为以下片段；它不是替代本工程完整 `main()` 的代码：
 
@@ -1007,7 +1014,7 @@ static bool AppEsp_RequestCurrent(void)
 
 ### 11.3 接收并分派响应
 
-以下函数可与上面的示例放在同一 C 源文件。它展示帧读取和类型分派，仅输出载荷用于联调，不调用 ApiRefresh 的 JSON 控制字段校验，也不实现界面数据转换。
+以下函数可与上面的示例放在同一 C 源文件。它展示帧读取和类型分派，当前仅输出载荷用于联调，没有引入项目尚未实现的 JSON 解析或界面数据接口。
 
 ```c
 static void AppEsp_Poll(void)
@@ -1025,23 +1032,17 @@ static void AppEsp_Poll(void)
         case ESP_COM_RSP_STATUS:
         case ESP_COM_RSP_CACHE:
         case ESP_COM_RSP_ACK:
-            shellPrint(&shell, "ESP type=0x%02X seq=%u len=%u payload=",
+            shellPrint(&shell, "ESP type=0x%02X seq=%u len=%u payload=%s\r\n",
                        (unsigned int)frame.type,
                        (unsigned int)frame.seq,
-                       (unsigned int)frame.len);
-            if (frame.len > 0U) {
-                shell.write((char *)frame.payload, frame.len);
-            }
-            shellWriteString(&shell, "\r\n");
+                       (unsigned int)frame.len,
+                       (const char *)frame.payload);
             break;
 
         case ESP_COM_RSP_ERROR:
-            shellPrint(&shell, "ESP error seq=%u payload=",
-                       (unsigned int)frame.seq);
-            if (frame.len > 0U) {
-                shell.write((char *)frame.payload, frame.len);
-            }
-            shellWriteString(&shell, "\r\n");
+            shellPrint(&shell, "ESP error seq=%u payload=%s\r\n",
+                       (unsigned int)frame.seq,
+                       (const char *)frame.payload);
             break;
 
         default:
@@ -1053,9 +1054,9 @@ static void AppEsp_Poll(void)
 }
 ```
 
-载荷按 `frame.len` 直接输出，不经过 `shellPrint()` 的格式化缓冲。若扩展为二进制协议，终端可能无法显示控制字节，应改用十六进制显示。Shell 输出是阻塞的，连续高流量场景应降低日志量。
+`%s` 在此仅用于约定的 JSON 文本联调，若扩展为二进制协议则应按 `frame.len` 输出或处理。Shell 输出是阻塞的，连续高流量场景应降低日志量。
 
-独立采用该底层示例时，可用 `AppEsp_Poll()` 完成协议轮询和帧打印。这两个 `AppEsp_*` 名字是示例辅助函数，不是通信模块已有接口。当前工程应保留 `EspCom_Poll() -> ApiRefresh_Poll() -> EPD_UI_Poll() -> shellTask(&shell)` 顺序；不要用这个示例删掉刷新库调度，也不要在库忙碌期间直接发送其他请求。
+在原 `flash_rw == 0` 主循环分支中，用 `AppEsp_Poll()` 替换单独的 `EspCom_Poll()`，保留 `shellTask(&shell)`。这两个 `AppEsp_*` 名字是本文示例辅助函数，不是通信模块已有接口。
 
 ```c
 /* Inside the existing flash_rw == 0 branch. */
@@ -1069,15 +1070,13 @@ shellTask(&shell);
 
 ### 11.4 请求刷新后获取新缓存
 
-当前工程已由 ApiRefresh 实现下面的串行流程，优先调用 `ApiRefresh_Start("current")`，通过 GetResult 查询终态。以下说明底层协议步骤。
-
 建议应用按以下状态推进，每一步等待时主循环仍持续轮询：
 
 1. 检查就绪状态，调用 `EspCom_RefreshApi("current")`；本地发送失败时记录 HAL 状态，不进入业务成功状态。
 2. 等待对应 `ACK` 或 `ERROR`。ACK 中 `ok=true` 只表示刷新请求已受理；收到 ERROR 时读取 `code`、`message`。
 3. 等待 IO5 恢复 HIGH，再查询 `EspCom_GetCache("response")` 检查本次刷新结果，然后调度 `EspCom_GetCache("current")`，分别等待各自的 CACHE 响应。
 4. 检查 `valid`，结合可用的 `obs_time`、`source_update_time` 等字段判断数据是否更新。`valid=true` 本身不能证明此次刷新已经完成。
-5. ApiRefresh 在失败或超时时记录终态并停止，不自动重复查询；成功时保存原始目标缓存，供应用后续处理。界面更新和再次手动触发刷新由调用方决定。
+5. 尚未更新时，按业务规定的间隔、次数和总时限继续查询；完成后更新界面，达到时限则记录超时并决定是否保留旧数据。
 
 `EspCom_ReadApi("current")` 或 `EspCom_ReadApi("minutely5m")` 仅检查本地缓存：有缓存时先等 ACK，再用 GET_CACHE 读取；无缓存时返回 ERROR。`daily3d` 支持刷新，首次读取前需先执行 `esp_refresh daily3d`。当前没有主动天气更新推送，不能假定 ACK 后必然自动收到 CACHE。
 
@@ -1089,7 +1088,7 @@ shellTask(&shell);
 4. 运行 `esp_cache minutely5m`、`esp_last`，读取描述和预报摘要；按 items 实际长度遍历。
 5. `esp_read minutely5m` 只确认缓存存在，不访问和风、不更新天气。
 
-单独使用底层接口时，响应等待超时由应用自行实现。现有 ApiRefresh 使用 TIM10 每 1 ms 累计的 uint32_t 时间源，通过无符号差值处理计数回绕；时限集中定义在 ApiRefresh.h。发送函数的 1000 ms 仅是本地 HAL UART 超时，不能当作业务响应时限。
+响应等待超时由应用自行实现，可使用 `uint32_t` 保存 `HAL_GetTick()`，通过 `(uint32_t)(HAL_GetTick() - start_tick) >= timeout_ms` 判断，以处理计数回绕。具体时限由 ESP 和后端响应速度决定，不能直接把发送函数的 1000 ms 当作业务响应时限。
 
 ## 12. 当前实现边界
 
@@ -1100,13 +1099,13 @@ shellTask(&shell);
 | 轮询间隔 | 理想连续满速输入时，空 FIFO 约 5.1 ms 填满；这是理论容量估算，不是实测安全调度周期 |
 | 完整帧缓存 | 只有一个最近帧槽；一次 `Poll()` 内多帧也会相互覆盖，没有完整帧队列 |
 | 帧消费 | `HasFrame`/`GetLastFrame` 不消费；`ClearFrame` 只清标志，Shell 和业务共享状态 |
-| 请求匹配 | 底层提供发送序号查询和帧观察回调；ApiRefresh 匹配 SEQ、类型和控制字段，无自动重试，8 位回绕及无事务 ID 的限制仍在 |
-| 多请求并发 | 没有待处理请求队列，ApiRefresh 一次仅接受一个流程，其他代码需避免同时直接发送 |
-| 响应等待 | 底层没有响应定时器；ApiRefresh 使用 TIM10 管理就绪、响应和刷新完成超时，发送返回不保证 ESP 成功 |
+| 请求匹配 | 底层提供 GetTxSequence 和观察回调，ApiRefresh 匹配 SEQ 与控制字段；8 位序号会回绕，无自动重试 |
+| 多请求并发 | ApiRefresh 共用一个天气/一言/取时请求槽，忙碌时拒绝新请求，直接调用底层发送仍需自行协调 |
+| 响应等待 | 托管请求使用 TIM10 超时；原始 esp_* 命令只发送，调用方需自行等待 |
 | 半帧恢复 | 解析器没有帧间超时；收到半帧后，后续字节可能被当作旧帧续传，直到满足长度和 CRC 阶段后重置 |
 | UART 错误恢复 | 项目未提供 USART2 专用 `HAL_UART_ErrorCallback` 恢复逻辑；ORE 等错误可能导致中断接收中止，需要另行处理 |
 | 就绪信号 | 两条状态线不是自动流控；拉低 STM32 就绪线不保证 ESP 停发，也不会停止本地 UART |
-| 内容处理 | 底层原样保存；ApiRefresh 校验流程字段，MainUI 已接入一言正文/作者并在成功后刷新，其他业务数据尚未接入显示 |
+| 内容处理 | 已校验请求控制字段，解析一言和时间；一言成功后绘屏，time 只解析保存，时间/天气尚未接入显示 |
 | 帧校验失败 | 错误版本/CRC 等帧不会成为可用帧；无应用错误回调或统计，也不会清除此前合法帧的可用标志 |
 | 大数据 | 单帧载荷最多 384 字节，无分片/重组，API 缓存展开需考虑 UTF-8 实际字节长度 |
 | 多任务使用 | 全局状态无锁；仅支持当前约定的单主循环消费，移植 RTOS 需明确串口和帧状态所有权 |

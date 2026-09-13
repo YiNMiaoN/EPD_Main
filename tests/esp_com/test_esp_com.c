@@ -17,6 +17,7 @@ int esp_last(int, char **);
 int esp_apis(int, char **);
 int api_refresh(int, char **);
 int api_result(int, char **);
+int api_time(int, char **);
 int ref_epd(int, char **);
 
 UART_HandleTypeDef huart2 = { USART2 };
@@ -176,6 +177,7 @@ static void expect_failure(ApiRefresh_Error error, ApiRefresh_State stage)
 
 static void test_api_refresh(void)
 {
+    assert(ApiRefresh_StartTime() == HAL_ERROR);
     assert(ApiRefresh_Start(NULL) == HAL_ERROR);
     ApiRefresh_Init();
     unsigned before = sends;
@@ -339,6 +341,142 @@ static void test_api_refresh(void)
     puts("API refresh workflow tests passed");
 }
 
+static const char time_ack[] = "{\"ok\":true,\"api\":\"time\",\"refresh\":false,\"realtime\":true,\"unix_time\":1799798400,\"utc_offset\":28800,\"date\":\"2027-01-13\",\"time\":\"08:00:00\",\"weekday\":3}";
+
+static void begin_time(void)
+{
+    ApiRefresh_Init();
+    ready = GPIO_PIN_SET;
+    tx_status = HAL_OK;
+    assert(ApiRefresh_StartTime() == HAL_OK);
+    ApiRefresh_Poll();
+    expect_request(ESP_COM_CMD_READ_API, "{\"api\":\"time\"}");
+}
+
+static void test_api_time(void)
+{
+    char *args[] = {"api_time"};
+    char *extra[] = {"api_time", "extra"};
+    ApiRefresh_Init();
+    output_len = 0;
+    assert(ApiRefresh_Start("time") == HAL_ERROR);
+    assert(api_time(2, extra) == HAL_ERROR);
+    ready = GPIO_PIN_RESET;
+    unsigned before = sends;
+    assert(api_time(1, args) == HAL_OK);
+    ApiRefresh_Poll();
+    assert(sends == before);
+    tick(API_REFRESH_READY_TIMEOUT_MS);
+    ApiRefresh_Poll();
+    expect_failure(API_REFRESH_ERROR_TIMEOUT, API_REFRESH_WAIT_READY);
+
+    begin_time();
+    before = sends;
+    assert(ApiRefresh_Start(NULL) == HAL_BUSY);
+    assert(ApiRefresh_StartTime() == HAL_BUSY);
+    assert(esp_read(1, args) == HAL_BUSY);
+    assert(ref_epd(1, args) == HAL_BUSY);
+    assert(sends == before);
+    receive_frame(ESP_COM_RSP_ACK, (uint8_t)(sent[4] + 1), (const uint8_t *)time_ack, sizeof(time_ack) - 1, 0);
+    EspCom_Poll();
+    ApiRefresh_Poll();
+    assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_ACK);
+    // NTP has its own deadline, beyond the ordinary 3s ACK timeout.
+    tick(API_REFRESH_REPLY_TIMEOUT_MS + 1);
+    ApiRefresh_Poll();
+    assert(ApiRefresh_IsBusy());
+    ready = GPIO_PIN_RESET;
+    receive_frame(ESP_COM_RSP_ACK, sent[4], (const uint8_t *)time_ack, sizeof(time_ack) - 1, 0);
+    output_len = 0;
+    esp_last(1, args);
+    ApiRefresh_Poll();
+    const ApiRefresh_Result *r = ApiRefresh_GetResult();
+    assert(r->state == API_REFRESH_SUCCEEDED && r->has_time);
+    assert(r->time.unix_time == 1799798400U && r->time.utc_offset == 28800);
+    assert(strcmp(r->time.date, "2027-01-13") == 0 && strcmp(r->time.time, "08:00:00") == 0);
+    assert(r->time.weekday == 3 && strcmp((const char *)r->frame.payload, time_ack) == 0);
+    output_len = 0;
+    api_result(1, args);
+    assert(strstr(output, "date=2027-01-13 time=08:00:00 weekday=3"));
+    assert(strstr(output, "unix_time=1799798400 utc_offset=28800") && strstr(output, time_ack));
+    tick(100000);
+    ApiRefresh_Poll();
+    assert(sends == before); // No cache/result query, no periodic request.
+
+    begin_time();
+    assert(!ApiRefresh_GetResult()->has_time);
+    reply(ESP_COM_RSP_ERROR, "{\"ok\":false,\"code\":\"request_failed\",\"message\":\"NTP time request failed\"}");
+    expect_failure(API_REFRESH_ERROR_ESP, API_REFRESH_WAIT_ACK);
+    assert(!ApiRefresh_GetResult()->has_time);
+    begin_time();
+    reply(ESP_COM_RSP_CACHE, time_ack);
+    expect_failure(API_REFRESH_ERROR_PROTOCOL, API_REFRESH_WAIT_ACK);
+    begin_time();
+    reply(ESP_COM_RSP_ACK, "{\"api\":\"time\",\"ok\":true,\"refresh\":false}");
+    expect_failure(API_REFRESH_ERROR_PROTOCOL, API_REFRESH_WAIT_ACK);
+    begin_time();
+    tick(API_TIME_REPLY_TIMEOUT_MS - 1);
+    ApiRefresh_Poll();
+    assert(ApiRefresh_IsBusy());
+    tick(1);
+    reply(ESP_COM_RSP_ACK, time_ack);
+    expect_failure(API_REFRESH_ERROR_TIMEOUT, API_REFRESH_WAIT_ACK);
+    begin_refresh();
+    assert(ApiRefresh_StartTime() == HAL_BUSY);
+    ApiRefresh_Init();
+    tx_status = HAL_TIMEOUT;
+    ready = GPIO_PIN_SET;
+    assert(ApiRefresh_StartTime() == HAL_OK);
+    ApiRefresh_Poll();
+    expect_failure(API_REFRESH_ERROR_TX, API_REFRESH_WAIT_READY);
+    tx_status = HAL_OK;
+
+    // Parser rejects missing, duplicate, nested, wrong-type and out-of-range fields.
+    const char *replacements[][2] = {
+        {"\"ok\":true", "\"ok\":false"}, {"\"api\":\"time\"", "\"api\":\"current\""},
+        {"\"refresh\":false", "\"refresh\":true"}, {"\"realtime\":true", "\"realtime\":\"true\""},
+        {"1799798400", "0"}, {"1799798400", "-1"}, {"1799798400", "4294967296"},
+        {"1799798400", "1.5"}, {"1799798400", "1e9"}, {"1799798400", "\"1799798400\""},
+        {"28800", "-86401"}, {"28800", "86401"},
+        {"2027-01-13", "2027-02-29"}, {"2027-01-13", "2100-02-29"},
+        {"2027-01-13", "2027-13-01"}, {"2027-01-13", "2027-04-31"},
+        {"2027-01-13", "2027-01-00"}, {"2027-01-13", "2027-1-13"},
+        {"08:00:00", "24:00:00"}, {"08:00:00", "08:60:00"}, {"08:00:00", "08:00:60"},
+        {"\"weekday\":3", "\"weekday\":7"}, {"\"weekday\":3", "\"weekday\":-1"},
+        {"\"weekday\":3", "\"weekday\":3,\"weekday\":3"},
+        {"\"weekday\":3", "\"other\":3"}, {"\"weekday\":3", "\"nested\":{\"weekday\":3}"}
+    };
+    EspCom_Frame frame = {.type = ESP_COM_RSP_ACK};
+    ApiTime parsed = {0};
+    memcpy(frame.payload, time_ack, sizeof(time_ack));
+    frame.len = sizeof(time_ack) - 1;
+    assert(ApiTime_ParseAck(&frame, &parsed));
+    ApiTime previous = parsed;
+    for (unsigned i = 0; i < sizeof(replacements) / sizeof(replacements[0]); ++i) {
+        const char *match = strstr(time_ack, replacements[i][0]);
+        assert(match);
+        int len = snprintf((char *)frame.payload, sizeof(frame.payload), "%.*s%s%s",
+                           (int)(match - time_ack), time_ack, replacements[i][1], match + strlen(replacements[i][0]));
+        assert(len > 0 && len <= ESP_COM_MAX_PAYLOAD);
+        frame.len = (uint16_t)len;
+        assert(!ApiTime_ParseAck(&frame, &parsed));
+        assert(memcmp(&parsed, &previous, sizeof(parsed)) == 0);
+    }
+    const char boundary[] = "{\"api\":\"time\",\"ok\":true,\"refresh\":false,\"realtime\":true,\"unix_time\":4294967295,\"utc_offset\":-18000,\"date\":\"2028-02-29\",\"time\":\"23:59:59\",\"weekday\":0}";
+    memcpy(frame.payload, boundary, sizeof(boundary));
+    frame.len = sizeof(boundary) - 1;
+    assert(ApiTime_ParseAck(&frame, &parsed));
+    assert(parsed.unix_time == UINT32_MAX && parsed.utc_offset == -18000 && parsed.weekday == 0);
+    assert(!ApiTime_ParseAck(NULL, &parsed) && !ApiTime_ParseAck(&frame, NULL));
+    ApiRefresh_Init();
+    output_len = 0;
+    char *raw[] = {"esp_read", "time"};
+    assert(esp_read(2, raw) == HAL_OK);
+    expect_request(ESP_COM_CMD_READ_API, "{\"api\":\"time\"}");
+    assert(ApiRefresh_GetResult()->state == API_REFRESH_IDLE);
+    puts("NTP time API and parser tests passed");
+}
+
 int main(void)
 {
     char *no_args[] = { "command" };
@@ -466,5 +604,6 @@ int main(void)
     assert(strstr(output, "daily7d: removed"));
     puts("ESP communication and Shell tests passed");
     test_api_refresh();
+    test_api_time();
     return 0;
 }

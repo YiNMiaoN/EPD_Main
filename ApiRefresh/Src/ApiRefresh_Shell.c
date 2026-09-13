@@ -19,6 +19,23 @@ SHELL_EXPORT_CMD(
     api_refresh, api_refresh, api_refresh [api]
 );
 
+int api_time(int argc, char *argv[])
+{
+    (void)argv;
+    if (argc != 1) {
+        shellWriteString(&shell, "usage: api_time\r\n");
+        return HAL_ERROR;
+    }
+    HAL_StatusTypeDef status = ApiRefresh_StartTime();
+    shellPrint(&shell, "api time start=%d\r\n", (int)status);
+    return (int)status;
+}
+
+SHELL_EXPORT_CMD(
+    SHELL_CMD_PERMISSION(0)|SHELL_CMD_TYPE(SHELL_TYPE_CMD_MAIN),
+    api_time, api_time, api_time
+);
+
 int api_result(int argc, char *argv[])
 {
     (void)argc;
@@ -29,6 +46,12 @@ int api_result(int argc, char *argv[])
     shellPrint(&shell, "error=%s stage=%s tx=%d\r\n",
                ApiRefresh_ErrorString(result->error),
                ApiRefresh_StateString(result->failed_stage), (int)result->tx_status);
+    if (result->has_time && result->state == API_REFRESH_SUCCEEDED) {
+        shellPrint(&shell, "date=%s time=%s weekday=%u\r\n",
+                   result->time.date, result->time.time, (unsigned)result->time.weekday);
+        shellPrint(&shell, "unix_time=%lu utc_offset=%ld\r\n",
+                   (unsigned long)result->time.unix_time, (long)result->time.utc_offset);
+    }
     if (result->has_frame) {
         shellPrint(&shell, "type=0x%02X seq=%u len=%u payload=",
                    (unsigned)result->frame.type, (unsigned)result->frame.seq,

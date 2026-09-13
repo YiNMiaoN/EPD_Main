@@ -6,7 +6,7 @@ Esp_Com.c, ApiRefresh.c, coreJSON and both Shell command modules are compiled
 without including the STM32 HAL.
 
 ```powershell
-gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c ApiRefresh/Src/ApiRefresh.c ApiRefresh/Src/ApiRefresh_Shell.c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_esp_com.exe
+gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c ApiRefresh/Src/ApiRefresh.c ApiRefresh/Src/ApiTime.c ApiRefresh/Src/ApiRefresh_Shell.c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_esp_com.exe
 ./cmake-build-debug/test_esp_com.exe
 ```
 
@@ -40,3 +40,11 @@ processed after the deadline. No HAL_GetTick implementation is linked.
 
 These tests do not measure TIM10's physical interrupt period, simulate actual
 ESP HTTP timing, or prove UART electrical reliability.
+
+NTP tests cover READ_API time framing, its single final ACK (no cache queries),
+the separate 10s deadline, wrong SEQ, ERROR and invalid replies, transmit failure,
+mutual exclusion with refresh/display commands, esp_last consumption, clearing
+previous time on a new request, parsed Shell output and no automatic polling.
+Parser tests cover missing/duplicate/nested fields, integer types and overflow,
+signed timezone offsets, valid leap day, invalid dates/times and weekday range.
+They do not contact an NTP server or establish that the returned clock is correct.

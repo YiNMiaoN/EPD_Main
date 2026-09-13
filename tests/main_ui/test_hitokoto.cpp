@@ -118,6 +118,7 @@ int main()
     assert(epd.displays == 1);
     publish(json, API_REFRESH_FAILED);
     publish(json, API_REFRESH_SUCCEEDED, "current");
+    publish(json, API_REFRESH_SUCCEEDED, "time");
     publish(cache(""));
     assert(epd.displays == 1 && !logText.empty());
     EPD_UI_Refresh();

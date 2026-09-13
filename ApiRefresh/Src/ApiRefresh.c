@@ -43,6 +43,9 @@ static uint32_t stage_timeout(void)
             return API_REFRESH_READY_TIMEOUT_MS;
         case API_REFRESH_WAIT_FINISH:
             return API_REFRESH_FETCH_TIMEOUT_MS;
+        case API_REFRESH_WAIT_ACK:
+            if (strcmp(result.api, ESP_COM_API_TIME) == 0) return API_TIME_REPLY_TIMEOUT_MS;
+            return API_REFRESH_REPLY_TIMEOUT_MS;
         default:
             return API_REFRESH_REPLY_TIMEOUT_MS;
     }
@@ -70,6 +73,23 @@ void ApiRefresh_Init(void)
     EspCom_SetFrameObserver(observe_frame);
 }
 
+static HAL_StatusTypeDef queue_request(const char *api)
+{
+    if (!initialized) return HAL_ERROR;
+    if (ApiRefresh_IsBusy()) return HAL_BUSY;
+    memset(&result, 0, sizeof(result));
+    strcpy(result.api, api);
+    result.state = API_REFRESH_WAIT_READY;
+    stage_tick = timer_ms;
+    pending = false;
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef ApiRefresh_StartTime(void)
+{
+    return queue_request(ESP_COM_API_TIME);
+}
+
 HAL_StatusTypeDef ApiRefresh_Start(const char *api)
 {
     static const char *const supported[] = {
@@ -95,12 +115,7 @@ HAL_StatusTypeDef ApiRefresh_Start(const char *api)
     if (selected == NULL) {
         return HAL_ERROR;
     }
-    memset(&result, 0, sizeof(result));
-    strcpy(result.api, selected);
-    result.state = API_REFRESH_WAIT_READY;
-    stage_tick = timer_ms;
-    pending = false;
-    return HAL_OK;
+    return queue_request(selected);
 }
 
 static bool key_is(const JSONPair_t *pair, const char *key)
@@ -172,6 +187,15 @@ static void handle_response(void)
         fail(API_REFRESH_ERROR_PROTOCOL);
         return;
     }
+    if (strcmp(result.api, ESP_COM_API_TIME) == 0) {
+        if (!ApiTime_ParseAck(&result.frame, &result.time)) {
+            fail(API_REFRESH_ERROR_PROTOCOL);
+        } else {
+            result.has_time = true;
+            result.state = API_REFRESH_SUCCEEDED;
+        }
+        return;
+    }
     if (result.state == API_REFRESH_WAIT_ACK) {
         if (result.frame.type != ESP_COM_RSP_ACK || !boolean_type(fields.ok) ||
             !boolean_type(fields.refresh)) {
@@ -202,9 +226,11 @@ static void handle_response(void)
     }
 }
 
-static void send_request(bool refresh, const char *api, ApiRefresh_State waiting)
+static void send_request(uint8_t command, const char *api, ApiRefresh_State waiting)
 {
-    result.tx_status = refresh ? EspCom_RefreshApi(api) : EspCom_GetCache(api);
+    if (command == ESP_COM_CMD_READ_API) result.tx_status = EspCom_ReadApi(api);
+    else if (command == ESP_COM_CMD_REFRESH_API) result.tx_status = EspCom_RefreshApi(api);
+    else result.tx_status = EspCom_GetCache(api);
     if (result.tx_status != HAL_OK) {
         fail(API_REFRESH_ERROR_TX);
         return;
@@ -231,17 +257,18 @@ void ApiRefresh_Poll(void)
     if (!EspCom_IsEspReady()) return;
     switch (result.state) {
         case API_REFRESH_WAIT_READY:
-            send_request(true, result.api, API_REFRESH_WAIT_ACK);
+            send_request(strcmp(result.api, ESP_COM_API_TIME) == 0 ? ESP_COM_CMD_READ_API :
+                         ESP_COM_CMD_REFRESH_API, result.api, API_REFRESH_WAIT_ACK);
             break;
         case API_REFRESH_WAIT_FINISH:
             // ESP may already have finished before we sample Ready. Do not require
             // observing LOW, but leave an ACK settling interval before querying.
             if ((uint32_t)(now - stage_tick) >= API_REFRESH_SETTLE_MS) {
-                send_request(false, ESP_COM_API_RESPONSE, API_REFRESH_WAIT_RESULT);
+                send_request(ESP_COM_CMD_GET_CACHE, ESP_COM_API_RESPONSE, API_REFRESH_WAIT_RESULT);
             }
             break;
         case API_REFRESH_WAIT_CACHE_READY:
-            send_request(false, result.api, API_REFRESH_WAIT_CACHE);
+            send_request(ESP_COM_CMD_GET_CACHE, result.api, API_REFRESH_WAIT_CACHE);
             break;
         default:
             break;

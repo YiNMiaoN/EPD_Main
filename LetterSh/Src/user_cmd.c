@@ -178,7 +178,7 @@ SHELL_EXPORT_CMD(
     SHELL_CMD_PERMISSION(0)|SHELL_CMD_TYPE(SHELL_TYPE_CMD_MAIN),
     esp_read,
     esp_read,
-    esp_read [api]
+    esp_read [api] (time: live NTP)
     );
 
 int esp_apis(int argc, char *argv[])
@@ -190,6 +190,8 @@ int esp_apis(int argc, char *argv[])
     shellWriteString(&shell, "minutely5m: refresh + summary; ESP longitude,latitude config required\r\n");
     shellWriteString(&shell, "alert: refresh + warning summary; valid=true,count=0 means no warnings\r\n");
     shellWriteString(&shell, "hitokoto: refresh + quote; hitokoto/from/from_who (author may be null)\r\n");
+    shellWriteString(&shell, "time: live NTP via esp_read time; ACK contains time; no cache/refresh\r\n");
+    shellWriteString(&shell, "api_time: tracked NTP request; inspect parsed time with api_result\r\n");
     shellWriteString(&shell, "response: last completed refresh result; inspect valid and ok\r\n");
     shellWriteString(&shell, "hourly72h/status: cache support only, no active data source\r\n");
     shellWriteString(&shell, "airquality/indices/sun/moon: UART cache not implemented\r\n");

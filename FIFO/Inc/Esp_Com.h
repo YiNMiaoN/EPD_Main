@@ -22,6 +22,7 @@ extern "C" {
 #define ESP_COM_API_ALERT           "alert"
 #define ESP_COM_API_HITOKOTO        "hitokoto"
 #define ESP_COM_API_RESPONSE        "response"
+#define ESP_COM_API_TIME            "time"
 
 #define ESP_COM_CMD_PING            0x01
 #define ESP_COM_CMD_GET_STATUS      0x02
@@ -63,7 +64,7 @@ HAL_StatusTypeDef EspCom_GetCache(const char *api);
 // ACK confirms queuing, not completion.
 // Wait for ESP_Ready to recover, then read response and the requested cache.
 HAL_StatusTypeDef EspCom_RefreshApi(const char *api);
-// Check local cache availability only; this does not make a network request.
+// Weather/quote: check local cache only. time: request live NTP, data in ACK.
 HAL_StatusTypeDef EspCom_ReadApi(const char *api);
 
 bool EspCom_HasFrame(void);

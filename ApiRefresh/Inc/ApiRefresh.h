@@ -2,6 +2,7 @@
 #define TOPINFO_API_REFRESH_H
 
 #include "Esp_Com.h"
+#include "ApiTime.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,6 +12,7 @@ extern "C" {
 #define API_REFRESH_REPLY_TIMEOUT_MS      3000U
 #define API_REFRESH_FETCH_TIMEOUT_MS     60000U
 #define API_REFRESH_SETTLE_MS              100U
+#define API_TIME_REPLY_TIMEOUT_MS         10000U
 
 typedef enum {
     API_REFRESH_IDLE,
@@ -43,6 +45,8 @@ typedef struct {
     HAL_StatusTypeDef tx_status;
     bool has_frame;
     EspCom_Frame frame;
+    bool has_time;
+    ApiTime time;
 } ApiRefresh_Result;
 
 // Initialize once after EspCom_Init(). Installs the single frame observer.
@@ -52,6 +56,8 @@ void ApiRefresh_Tick1ms(void);
 // Queue one of current/daily3d/minutely5m/alert/hitokoto; NULL means current.
 // HAL_OK means accepted locally. HAL_BUSY leaves the active operation intact.
 HAL_StatusTypeDef ApiRefresh_Start(const char *api);
+// Queue READ_API time, sharing the same single request slot and TIM10 timebase.
+HAL_StatusTypeDef ApiRefresh_StartTime(void);
 // Call after EspCom_Poll() in the main loop. No network wait or HAL_Delay.
 void ApiRefresh_Poll(void);
 bool ApiRefresh_IsBusy(void);

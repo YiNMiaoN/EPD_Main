@@ -6,7 +6,7 @@ TopInfo 是一个基于 **STM32F401RCTx + ESP8266 + 400×300 墨水屏**的信�
 
 ## 当前版本
 
-截至 **2026-09-12**，本版本处于显示基础功能和 ESP 通信联调阶段。
+截至 **2026-09-13**，本版本处于显示基础功能和 ESP 通信联调阶段。本次补齐 NTP 获取 API，作为后续局部刷新测试前的版本；局部刷新实验尚未开始。
 
 | 功能 | 当前状态 |
 | --- | --- |
@@ -16,6 +16,7 @@ TopInfo 是一个基于 **STM32F401RCTx + ESP8266 + 400×300 墨水屏**的信�
 | ESP 通信 | 帧封装、CRC 校验、单字节中断接收、FIFO 和轮询解帧已实现 |
 | 数据接口 | 可请求实时天气、三日预报、分钟降雨、预警和一言 |
 | API 刷新库 | TIM10 计时、手动触发完整刷新流程，含响应匹配和阶段超时；无周期刷新 |
+| 网络时间 | api_time 实时请求 ESP NTP，解析日期、时间、星期与时区；未接入 RTC、走时或显示 |
 | 调试控制台 | USART1 LetterShell，支持查询、刷新、查看响应及就绪状态 |
 | 数据驱动显示 | 一言手动刷新成功后自动更新 MainUI；天气、时间和待办仍为固定示例 |
 | 外部 Flash 写入 | 保留 USART1 DMA 资源写入实验流程，存在已知限制 |
@@ -40,6 +41,7 @@ TopInfo 是一个基于 **STM32F401RCTx + ESP8266 + 400×300 墨水屏**的信�
 | --- | --- |
 | [ESP通信README.md](ESP通信README.md) | 当前协议、全部 16 个底层 C/C++ API、业务字段和 Shell 联调 |
 | [ApiRefresh/README.md](ApiRefresh/README.md) | 手动刷新库、TIM10 接入、状态/错误及 api_refresh/api_result 命令 |
+| [ApiRefresh/TIME_README.md](ApiRefresh/TIME_README.md) | NTP 时间 API、字段与校验、CLI 测试及本次版本边界 |
 | [和风README.md](和风README.md) | QWeather 图标资源格式、Flash 布局及图标接口 |
 | [tests/esp_com/README.md](tests/esp_com/README.md) | PC 主机测试的构建方式和覆盖范围 |
 | [tests/main_ui/README.md](tests/main_ui/README.md) | 一言解析、排版和绘屏触发的主机测试 |
@@ -137,6 +139,7 @@ openocd -f st_nucleo_f4.cfg -c "program build/debug/TopInfo.elf verify reset exi
 | alert | 天气预警摘要 | valid=true、count=0、items=[] 表示有效的无预警结果 |
 | hitokoto | 一言、出处、作者 | hitokoto、from 为字符串，from_who 可为 null |
 | response | 最近一次已受理刷新结果 | 只读结果缓存，检查 valid、业务 api 和 ok；不支持刷新 |
+| time | 实时 NTP 时间 | 仅 READ_API，时间直接放在 ACK，无缓存，不走 REFRESH_API |
 
 daily7d 已停用，请使用 daily3d。hourly72h、status 有缓存逻辑但当前无数据源；airquality、indices、sun、moon 的 UART 缓存返回尚未展开。
 
@@ -168,6 +171,7 @@ tx=0 只说明 STM32 本地发送完成；ACK 只说明 ESP 接受请求；刷�
 | --- | --- |
 | ref_epd | 绘制主界面（含最近成功的一言）、刷新屏幕并休眠 |
 | api_refresh [api] | 手动启动完整刷新流程，默认 current，不启动周期任务 |
+| api_time | 手动启动 NTP 取时，完成后用 api_result 查看解析时间 |
 | api_result | 查询刷新状态、失败阶段及最近匹配响应，不消费结果 |
 | esp_apis | 显示 API 支持范围 |
 | esp_ready | 查看 ESP 就绪输入 |
@@ -176,7 +180,7 @@ tx=0 只说明 STM32 本地发送完成；ACK 只说明 ESP 接受请求；刷�
 | esp_status | 查询 ESP 自身状态，与 esp_cache status 不同 |
 | esp_refresh [api] | 请求 HTTPS 刷新，默认 current |
 | esp_cache [api] | 获取 ESP 已有缓存，默认 current |
-| esp_read [api] | 仅检查本地缓存存在，默认 daily3d，不访问网络 |
+| esp_read [api] | 默认 daily3d；天气/一言检查缓存，time 实时请求 NTP 并在 ACK 返回时间 |
 | esp_last | 打印最近合法帧并清除可用标志 |
 
 业务命令在 ESP 就绪线为低时不发送，返回 HAL_BUSY (2)。底层 C 接口不会自动检查 GPIO；EspCom_ReadApi(NULL) 仍默认 current，与 Shell 默认值不同。
@@ -184,6 +188,8 @@ tx=0 只说明 STM32 本地发送完成；ACK 只说明 ESP 接受请求；刷�
 ApiRefresh 忙碌期间，所有 ESP 发送命令、`esp_ready 0/1` 和 `ref_epd` 返回 HAL_BUSY；无参数 `esp_ready`、`esp_last` 和 `api_result` 可继续查看状态。手动刷新库启动时可先等待 ESP 就绪，最长等待时间见库配置。
 
 ## 代码结构与运行流程
+
+NTP 联调：`esp_ready` 确认就绪，`api_time` 启动，再间隔执行 `api_result` 等待终态。成功时显示 date/time/weekday、unix_time/utc_offset 和原始 ACK。时间是快照，不会自行走秒或触发屏幕刷新；无需 esp_cache response/time。详细步骤见 [NTP 时间 API](ApiRefresh/TIME_README.md)。
 
 ~~~text
 Core/                   CubeMX 外设、主循环、C/C++ 桥接和全局对象
@@ -274,19 +280,19 @@ Uart_OTA.c 的名称沿用旧命名，当前功能实际是通过 USART1 向**�
 
 ## 验证记录
 
-2026-09-12 当前源码已在 Windows 下使用 CLion 配置的 Arm GNU 工具链完成 Debug 构建，生成 ELF、HEX 和 BIN。最近一次链接器报告：
+2026-09-13 当前源码已在 Windows 下使用 CLion 配置的 Arm GNU 工具链完成 Debug 构建，生成 ELF、HEX 和 BIN。最近一次链接器报告：
 
 | 区域 | 已用 | 总量 | 占比 |
 | --- | --- | --- | --- |
-| RAM | 49472 B | 64 KB | 75.49% |
-| Flash | 182972 B | 256 KB | 69.80% |
+| RAM | 49512 B | 64 KB | 75.55% |
+| Flash | 184676 B | 256 KB | 70.45% |
 
 这是当前配置的链接统计，不是运行时栈峰值测量；更改工具链、优化选项或代码后会变化。
 
 PC 主机测试使用本机 GCC，不使用 Arm 交叉编译器。仓库根目录执行以下命令，要求已有 cmake-build-debug 目录：
 
 ~~~powershell
-gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c ApiRefresh/Src/ApiRefresh.c ApiRefresh/Src/ApiRefresh_Shell.c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_esp_com.exe
+gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c ApiRefresh/Src/ApiRefresh.c ApiRefresh/Src/ApiTime.c ApiRefresh/Src/ApiRefresh_Shell.c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_esp_com.exe
 ./cmake-build-debug/test_esp_com.exe
 ~~~
 
