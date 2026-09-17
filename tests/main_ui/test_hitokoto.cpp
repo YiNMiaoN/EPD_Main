@@ -15,6 +15,8 @@ static ApiRefresh_Result result{};
 static std::string logText;
 
 extern "C" const ApiRefresh_Result *ApiRefresh_GetResult(void) { return &result; }
+extern "C" bool ApiRefresh_IsBusy(void) { return false; }
+extern "C" HAL_StatusTypeDef ApiRefresh_StartTime(void) { return HAL_ERROR; }
 unsigned short shellWriteString(Shell *, const char *text) {
     logText += text;
     return static_cast<unsigned short>(std::strlen(text));

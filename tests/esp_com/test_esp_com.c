@@ -1,5 +1,6 @@
 #include "Esp_Com.h"
 #include "ApiRefresh.h"
+#include "SystemHeartbeat.h"
 #include "gpio.h"
 #include "shell.h"
 #include <assert.h>
@@ -722,5 +723,10 @@ int main(void)
     test_todolist(ESP_COM_API_TODOLIST, "today");
     test_todolist(ESP_COM_API_TODOLIST_INBOX, "inbox_next2d");
     test_api_time();
+    // 重新初始化通信库不能重置其他任务共用的系统心跳。
+    uint32_t shared_before = SystemHeartbeat_Millis();
+    SystemHeartbeat_Tick1ms();
+    ApiRefresh_Init();
+    assert(SystemHeartbeat_Millis() == shared_before + 1U);
     return 0;
 }

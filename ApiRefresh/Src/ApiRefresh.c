@@ -1,4 +1,5 @@
 #include "ApiRefresh.h"
+#include "SystemHeartbeat.h"
 #include "core_json.h"
 #include <string.h>
 
@@ -8,11 +9,10 @@ static bool pending;
 static uint8_t expected_seq;
 static uint32_t stage_tick;
 static uint32_t received_tick;
-static volatile uint32_t timer_ms;
 
 void ApiRefresh_Tick1ms(void)
 {
-    ++timer_ms;
+    SystemHeartbeat_Tick1ms();
 }
 
 typedef struct {
@@ -60,7 +60,7 @@ static void observe_frame(const EspCom_Frame *frame)
         frame->seq == expected_seq && !pending) {
         result.frame = *frame;
         result.has_frame = true;
-        received_tick = timer_ms;
+        received_tick = SystemHeartbeat_Millis();
         pending = true;
     }
 }
@@ -69,7 +69,6 @@ void ApiRefresh_Init(void)
 {
     memset(&result, 0, sizeof(result));
     pending = false;
-    timer_ms = 0;
     initialized = true;
     EspCom_SetFrameObserver(observe_frame);
 }
@@ -81,7 +80,7 @@ static HAL_StatusTypeDef queue_request(const char *api)
     memset(&result, 0, sizeof(result));
     strcpy(result.api, api);
     result.state = API_REFRESH_WAIT_READY;
-    stage_tick = timer_ms;
+    stage_tick = SystemHeartbeat_Millis();
     pending = false;
     return HAL_OK;
 }
@@ -219,7 +218,7 @@ static void handle_response(void)
             fail(API_REFRESH_ERROR_REJECTED);
         } else {
             result.state = API_REFRESH_WAIT_FINISH;
-            stage_tick = timer_ms;
+            stage_tick = SystemHeartbeat_Millis();
         }
         return;
     }
@@ -237,7 +236,7 @@ static void handle_response(void)
             fail(API_REFRESH_ERROR_REMOTE_REFRESH);
         } else {
             result.state = API_REFRESH_WAIT_CACHE_READY;
-            stage_tick = timer_ms;
+            stage_tick = SystemHeartbeat_Millis();
         }
     } else {
         result.state = API_REFRESH_SUCCEEDED;
@@ -255,13 +254,13 @@ static void send_request(uint8_t command, const char *api, ApiRefresh_State wait
     }
     expected_seq = EspCom_GetTxSequence();
     result.state = waiting;
-    stage_tick = timer_ms;
+    stage_tick = SystemHeartbeat_Millis();
 }
 
 void ApiRefresh_Poll(void)
 {
     if (!ApiRefresh_IsBusy()) return;
-    uint32_t now = timer_ms;
+    uint32_t now = SystemHeartbeat_Millis();
     // A frame parsed before its deadline can be handled on the next loop pass.
     uint32_t elapsed = (pending ? received_tick : now) - stage_tick;
     if (elapsed >= stage_timeout()) {

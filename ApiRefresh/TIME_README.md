@@ -1,6 +1,6 @@
 # NTP 时间 API
 
-2026-09-13：本版本完成 STM32 对 ESP 实时 NTP 接口的请求、响应校验、字段解析与 Shell 联调。用于局部刷新实验前的版本记录；本次未修改 MainUI 时间、RTC、走时、定时器配置、一言显示或墨水屏驱动，也未启用局部刷新或周期取时。
+当前应用已接入上电一次 NTP 校时，随后使用 TIM10 系统共享心跳走时，分钟变化时局刷时间、日期和星期。实现及验证说明见 [本地时钟](../Disp/CLOCK_README.md)。以下 API 和 Shell 仍可用于独立协议诊断。
 
 ## 协议
 
@@ -34,7 +34,7 @@ unix_time=1799798400 utc_offset=28800
 type=0x84 seq=... len=... payload={...}
 ```
 
-`api_result` 可重复查看，不消费结果。显示时间是本次响应的快照，等待后再查看不会自行走秒。无失败时 `stage=idle` 没有错误含义；Shell 的 `Return: 0` 仅表示命令执行成功，须查看 state。取时不触发屏幕刷新，MainUI 时间仍保留原示例。
+`api_result` 可重复查看，不消费结果。显示时间是本次响应的快照，等待后再查看不会自行走秒。无失败时 `stage=idle` 没有错误含义；Shell 的 `Return: 0` 仅表示命令执行成功，须查看 state。手动取时仅用于诊断，不重新设置已结束启动校时流程的本地时钟。上电自动请求的成功结果会初始化 MainUI 时钟。
 
 也可用底层调试顺序 `esp_read time`，稍后 `esp_last`，从 ACK 读取原始时间字段。此方式不启动 ApiRefresh 跟踪、不填入 `ApiRefresh_Result.time`；`api_result` 仍显示上一次受理的库请求。两种方式选一种，不要交错测试。
 
@@ -52,7 +52,7 @@ HAL_StatusTypeDef status = ApiRefresh_StartTime();
 const ApiRefresh_Result *result = ApiRefresh_GetResult();
 if (result->state == API_REFRESH_SUCCEEDED && result->has_time) {
     ApiTime snapshot = result->time;
-    // The application may retain snapshot for a future clock/RTC integration.
+    // Diagnostic snapshot; LocalClock handles the separate boot-only synchronization.
     (void)snapshot;
 }
 ```
@@ -77,7 +77,7 @@ if (result->state == API_REFRESH_SUCCEEDED && result->has_time) {
 
 使用现有 coreJSON 检查 JSON 语法，只读取顶层字段。api 必须为 time，ok/realtime 必须为 true，refresh 必须为 false；九个约定字段均必需，重复字段、嵌套替代字段和错误类型拒绝。未知扩展字段忽略。字段名及日期时间采用约定的未转义 ASCII 格式。
 
-数字必须为 JSON 整数文本，不接受数字字符串、小数或指数；时间戳拒绝 0、负数和 uint32_t 溢出。时区偏移接受 -86400～86400 秒，星期接受 0～6。日期检查月份、天数和闰年，时分秒范围为 0～23、0～59、0～59。当前不做 unix_time 与 date/time/weekday 的交叉换算一致性检查，也不评估网络延迟或 NTP 服务可信度；后续校时前仍需按实际设备测试核对。
+数字必须为 JSON 整数文本，不接受数字字符串、小数或指数；时间戳拒绝 0、负数和 uint32_t 溢出。时区偏移接受 -86400～86400 秒，星期接受 0～6。日期检查月份、天数和闰年，时分秒范围为 0～23、0～59、0～59。本解析接口只做字段检查；应用层 LocalClock 在启动校时前额外交叉核对 unix_time、utc_offset 与 date/time/weekday。不补偿 NTP 响应到达的网络延迟。
 
 | 条件 | state / error | 说明 |
 | --- | --- | --- |

@@ -38,6 +38,24 @@ static unsigned commandCount(uint8_t command) {
     for (const auto& item : transfers) count += item.command == command;
     return count;
 }
+static void verifyPartialWaveform() {
+    // 禁止触发时从 OTP 重载波形；新/旧 RAM 相同的 BB、WW 必须无脉冲。
+    assert(payload(0x22) == std::vector<uint8_t>({0xC7}));
+    assert(payload(0x21) == std::vector<uint8_t>({0x00}));
+    const auto& lut = payload(0x32);
+    assert(lut.size() == 70);
+    for (unsigned i = 0; i < 7; ++i) {
+        assert(lut[i] == 0 && lut[21 + i] == 0 && lut[28 + i] == 0);
+    }
+    assert(lut[7] == 0x82 && lut[14] == 0x50);
+    assert(commandCount(0x20) == 1 && commandCount(0x26) == 1);
+    bool activated = false;
+    for (const auto& item : transfers) {
+        if (item.command == 0x20) activated = true;
+        if (item.command == 0x26) assert(activated);
+    }
+    assert(payload(0x26) == payload(0x24));
+}
 static void ready(uint8_t *frame) {
     busy = false;
     failAfter = -1;
@@ -82,8 +100,22 @@ int main() {
         for (unsigned y = 0; y < 50; ++y)
             for (unsigned x = 0; x < 25; ++x)
                 assert(pixels[y * 25 + x] == frame[(200 + y) * 50 + 10 + x]);
-        assert(payload(0x22) == std::vector<uint8_t>({0xFF}));
-        assert(commandCount(0x26) == 0 && commandCount(0x12) == 0);
+        verifyPartialWaveform();
+        assert(commandCount(0x12) == 0);
+        transfers.clear();
+    }
+    // 实际时钟窗口连续黑白翻转，检查源步长、写入范围及参考 RAM 同步。
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        for (unsigned y = 0; y < 40; ++y)
+            for (unsigned x = 31; x < 50; ++x) frame[y * 50 + x] ^= 0xFF;
+        assert(EPD_DisplayPartial(frame, 248, 0, 152, 40) == HAL_OK);
+        assert(payload(0x44) == std::vector<uint8_t>({31, 49}));
+        assert(payload(0x45) == std::vector<uint8_t>({0, 0, 39, 0}));
+        assert(payload(0x24).size() == 760);
+        for (unsigned y = 0; y < 40; ++y)
+            for (unsigned x = 0; x < 19; ++x)
+                assert(payload(0x24)[y * 19 + x] == frame[y * 50 + 31 + x]);
+        verifyPartialWaveform();
         transfers.clear();
     }
     assert(EPD_DisplayPartial(frame, 392, 299, 8, 1) == HAL_OK);
@@ -145,5 +177,19 @@ int main() {
     assert(transfers.empty());
     ready(frame);
     assert(EPD_DisplayPartial(frame, 0, 0, 8, 1) == HAL_OK);
+    // 显示已触发但参考 RAM 同步失败时，也不能继续依赖局刷状态。
+    unsigned bytesBeforeReference = 0;
+    for (const auto& item : transfers) {
+        if (item.command == 0x26) break;
+        bytesBeforeReference += 1 + static_cast<unsigned>(item.data.size());
+    }
+    ready(frame);
+    failAfter = static_cast<int>(bytesBeforeReference + 1);
+    assert(EPD_DisplayPartial(frame, 0, 0, 8, 1) == HAL_ERROR);
+    assert(commandCount(0x20) == 1 && !EPD_CanRefreshPartial());
+    transfers.clear();
+    failAfter = -1;
+    assert(EPD_DisplayPartial(frame, 0, 0, 8, 1) == HAL_ERROR);
+    assert(transfers.empty());
     std::puts("EPD partial tests passed");
 }

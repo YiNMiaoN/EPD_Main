@@ -51,7 +51,7 @@ typedef struct {
 
 // Initialize once after EspCom_Init(). Installs the single frame observer.
 void ApiRefresh_Init(void);
-// Call once per TIM10 1 ms interrupt. Only increments the library timebase.
+// 兼容旧调用：转发到系统共享心跳。TIM10 已直接调用 SystemHeartbeat_Tick1ms，不能再同时调用此接口。
 void ApiRefresh_Tick1ms(void);
 // Queue weather/quote/todolist/todolist_inbox; NULL means current.
 // Todoist validates its stage and retains raw JSON; no task model or UI update.

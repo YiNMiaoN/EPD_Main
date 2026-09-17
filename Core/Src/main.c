@@ -33,6 +33,8 @@
 #include "Uart_RTX.h"
 #include "Esp_Com.h"
 #include "ApiRefresh.h"
+#include "SystemHeartbeat.h"
+#include "LocalClock.h"
 #include "shell.h"
 #include "usbd_cdc_if.h"
 /* USER CODE END Includes */
@@ -130,12 +132,15 @@ int main(void)
     EPD_HW_Init();
     EPD_HW_Clear();
     shell_Init();
+    SystemHeartbeat_Init();
     ApiRefresh_Init();
+    LocalClock_Init();
     __HAL_TIM_SET_COUNTER(&htim10, 0);
     __HAL_TIM_CLEAR_FLAG(&htim10, TIM_FLAG_UPDATE);
     if (HAL_TIM_Base_Start_IT(&htim10) != HAL_OK) {
       Error_Handler();
     }
+    LocalClock_Start();
   }
 
 

@@ -10,7 +10,27 @@ static bool epdInitialized = false;
 static bool epdBaseReady = false;
 static constexpr uint32_t EPD_BUSY_TIMEOUT_MS = 15000;
 
+// HINK-E042A13-A0 社区参考驱动的 70 字节黑白局刷 LUT：
+// https://github.com/ZinggJM/GxEPD2/discussions/107 （附件 drive.zip）
+// BB、WW 不施加转换脉冲；BW、WB 分别执行黑转白和白转黑。
+static constexpr uint8_t EPD_PARTIAL_LUT[] = {
+    0x00, 0, 0, 0, 0, 0, 0,
+    0x82, 0, 0, 0, 0, 0, 0,
+    0x50, 0, 0, 0, 0, 0, 0,
+    0x00, 0, 0, 0, 0, 0, 0,
+    0x00, 0, 0, 0, 0, 0, 0,
+    0x08, 0x08, 0x00, 0x08, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x01,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0
+};
+static_assert(sizeof(EPD_PARTIAL_LUT) == 70, "SSD1619A LUT must contain 70 bytes");
+
 HAL_StatusTypeDef EPD_GetStatus(void) { return epdStatus; }
+bool EPD_CanRefreshPartial(void) { return epdInitialized && epdBaseReady && epdStatus == HAL_OK; }
 
 static void EPD_RecordError(HAL_StatusTypeDef status)
 {
@@ -141,7 +161,8 @@ static void EPD_TurnOnDisplay(void)
 static void EPD_TurnOnDisplay_Partial(void)
 {
     EPD_SendCommand(0x22);
-    EPD_SendData(0xFF);
+    // 执行已写入的 LUT，不再从 OTP 加载另一套波形覆盖它。
+    EPD_SendData(0xC7);
     EPD_SendCommand(0x20);
     EPD_ReadBusy();
 }
@@ -350,9 +371,15 @@ static HAL_StatusTypeDef EPD_WritePartial(const uint8_t *Image, uint32_t stride,
     EPD_ReadBusy();
     EPD_SendCommand(0x21);
     EPD_SendData(0x00);
-    EPD_SendData(0x00);
     EPD_SendCommand(0x3C);
     EPD_SendData(0x80);
+    // 采用该面板参考局刷 LUT 的行时序；不改电压、复位或整屏初始化。
+    EPD_SendCommand(0x3A);
+    EPD_SendData(0x21);
+    EPD_SendCommand(0x3B);
+    EPD_SendData(0x06);
+    EPD_SendCommand(0x32);
+    for (uint8_t value : EPD_PARTIAL_LUT) EPD_SendData(value);
     EPD_SendCommand(0x11);
     EPD_SendData(0x03);
     EPD_SetWindows(x, y, x + width - 1, y + height - 1);
@@ -364,6 +391,17 @@ static HAL_StatusTypeDef EPD_WritePartial(const uint8_t *Image, uint32_t stride,
         }
     }
     EPD_TurnOnDisplay_Partial();
+    // BUSY 结束后才同步该窗口的参考 RAM。下一次局刷时，未变化像素
+    // 对应 BB/WW；只写控制器 RAM，不触发第二次刷新、不增加 MCU 帧缓冲。
+    if (epdStatus == HAL_OK) {
+        EPD_SetCursor(x, y);
+        EPD_SendCommand(0x26);
+        for (uint32_t row = 0; row < height && epdStatus == HAL_OK; ++row) {
+            for (uint32_t col = 0; col < width / 8 && epdStatus == HAL_OK; ++col) {
+                EPD_SendData(Image[row * stride + col]);
+            }
+        }
+    }
     return epdStatus;
 }
 

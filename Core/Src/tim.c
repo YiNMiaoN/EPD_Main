@@ -21,7 +21,7 @@
 #include "tim.h"
 
 /* USER CODE BEGIN 0 */
-#include "ApiRefresh.h"
+#include "SystemHeartbeat.h"
 
 /* USER CODE END 0 */
 
@@ -225,7 +225,7 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* tim_baseHandle)
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   if (htim->Instance == TIM10) {
-    ApiRefresh_Tick1ms();
+    SystemHeartbeat_Tick1ms();
   }
 }
 

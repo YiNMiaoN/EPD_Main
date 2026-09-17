@@ -338,8 +338,7 @@ TYPE = 0x83
   "valid": true,
   "temp": "31",
   "humidity": "66",
-  "text": "cloudy",
-  "source_update_time": "2026-09-10T21:50+08:00"
+  "icon": "101"
 }
 ```
 
@@ -388,9 +387,9 @@ ESP 建议响应：
 | `api` | 用途 | 协议文档中的 `GET_CACHE` 支持情况 |
 | --- | --- | --- |
 | `current` | 实时天气 | 已展开实时天气字段 |
-| `daily3d` | 三日天气预报 | 已接入 weather/v1/daily，返回三天的日期、天气描述、最高/最低温度 |
+| `daily3d` | 三日天气预报 | 已接入 weather/v1/daily，返回三天的日期、天气描述、白天图标码、最高/最低温度 |
 | `hourly72h` | 逐小时预报 | 已实现最多 6 小时摘要转换，未接入网络数据源 |
-| `minutely5m` | 分钟级降水 | 已接入 `/v7/minutely/5m`，返回描述及单帧摘要；需配置经纬度 |
+| `minutely5m` | 分钟级降水 | 已接入 `/v7/minutely/5m`，完整返回两小时 24 项数值数组及累计降水量；需配置经纬度 |
 | `alert` | 天气预警 | 已接入 `/v7/warning/now`，返回总数和预警摘要；空数组表示无预警 |
 | `hitokoto` | 一言 | 已接入 `v1.hitokoto.cn`，返回句子、出处和作者 |
 | `todolist` | Todoist 今日待办摘要 | 首页最多 5 条，串口摘要最多 384 字节；含标题截断及剩余数据标记，须本地配置 Token |
@@ -546,7 +545,7 @@ STM32 等待完成后读取 `response` 并确认 `api=todolist`：
 
 启动后无成功缓存返回 `valid=false`、`message="cache not available"`。`READ_API todolist` 只检查缓存，返回 `ACK/refresh:false`，不重新联网。类型编号仍为 0x01～0x05，不新增 0x06。
 
-STM32 已有 `ESP_COM_API_TODOLIST`，托管入口 `ApiRefresh_Start(ESP_COM_API_TODOLIST)` / `api_refresh todolist`，随后 `api_result` 查看终态及原始 JSON；`esp_apis` 已列出它。托管层校验通用控制字段及有效 response/cache 的顶层 stage=today，成功保存 todolist 缓存，失败保留 response，不同时保存两帧。STM32 侧后续需按上述字段增加任务解析/UI；旧 http_probe 阶段已不再接受。ESP 不启动周期请求。
+STM32 已有 `ESP_COM_API_TODOLIST`，托管入口 `ApiRefresh_Start(ESP_COM_API_TODOLIST)` / `api_refresh todolist`，随后 `api_result` 查看终态及原始 JSON；`esp_apis` 已列出它。托管层当前只校验通用控制字段，成功保存 todolist 缓存，失败保留 response，不同时保存两帧。STM32 侧后续需按上述字段增加任务解析/UI；若有旧 stage 判断应改为 today。ESP 不启动周期请求。
 
 #### 正文缓冲分配时机
 
@@ -594,20 +593,6 @@ Return: 0, 0x00000000
 本次实板证据确认到 **STM32 ↔ ESP 的请求/ACK 通信及状态机推进**，日志尚无 `http_status` 或 `state=succeeded`，因此暂不记录为 ESP → Todoist 的 HTTP 200 验证成功，也不表示待办数据已获取。
 
 接下来间隔执行 `api_result`，直到 `state=succeeded` 或 `state=failed`，保留完整输出。托管流程会自动查询 `response` 和 `todolist` 缓存，无需手工追加 `esp_cache`；忙碌期间也不要重复发起刷新。成功时核对最终缓存中的 `api=todolist`、`valid=true`、`stage=today` 和 `http_status=200`；失败时查看 `error`、失败 `stage` 及保留的原始 payload。`wait_finish` 沿用 60 秒阶段超时，单次看到该状态属于正常中间过程。
-
-#### 空 response 故障跟进（用户实板反馈：已解决）
-
-在上述 ACK 后，用户曾观察到：
-
-```text
-api=todolist state=failed
-error=invalid_response stage=wait_result tx=0
-type=0x83 seq=2 len=64 payload={"api":"response","valid":false,"message":"cache not available"}
-```
-
-用户后续确认根因是 ESP 内存不足，问题已解决。此结论来自用户实板排查反馈；本仓库未独立抓取 ESP 故障现场。此前“查询过早/Ready 时序”等仅是排查假设，不作为本次确定根因。STM32 不为该故障新增延迟、自动重试或忽略空缓存。
-
-日志中的 invalid_response 来自先检查业务 api：期望 todolist，却收到空记录的 api=response，因此在 valid=false 分类前结束。现有错误分类保持不变。问题解决不等同于新增 Inbox 接口或任务 UI 已完成端到端验证。
 
 #### 底层联调步骤（托管请求空闲时使用）
 
@@ -666,7 +651,7 @@ Apifox 的 Query 参数填写未编码的 `#Inbox & (today | tomorrow)`，由工
 
 复用延后分配的 4096 字节接收上限、Inbox 首页最多 2 条（今日接口仍为 5 条）和 384 字节串口摘要。`count` 为本页条数，不是总数；`has_more` 表示服务端还有页或摘要未装下本页全部任务，不支持自动翻页。空列表清除 Inbox 旧数据；请求/校验失败保留 Inbox 旧缓存，不影响今日缓存。增加一个缓存槽，在 ESP8266 上约增加 400 字节常驻 RAM；仍只有一个待执行请求，不并行创建两个 TLS 客户端。
 
-**STM32 对接状态**：已新增 `ESP_COM_API_TODOLIST_INBOX`、API 白名单和 Shell 说明，可执行 `api_refresh todolist_inbox`，随后通过 `api_result` 查看结果。有效 response/cache 必须具有顶层 `stage=inbox_next2d`，今日接口则要求 `stage=today`；旧 http_probe、缺失、重复、错误类型或错视图 stage 均拒绝。仍复用单请求槽和 384 字节帧，不并发刷新。任务字段原样保留，尚未建立任务数据模型或更新 UI。此接入不代表已通过 STM32 Inbox 实板验证，帧类型仍为 0x01～0x05。
+**STM32 对接待办**：ESP 已支持新名称，但现有 STM32 的枚举/API 白名单及托管入口未由本次修改。STM32 智能体需新增对应 API 映射和 `stage=inbox_next2d` 解析，再启用 `api_refresh todolist_inbox`。不要把新增名称当成已经通过 STM32 实板验证。帧类型仍为 0x01～0x05。
 
 #### 电脑串口 HEX 联调
 
@@ -757,6 +742,7 @@ STM32 联调顺序：
 | --- | --- | --- |
 | `date` | `days[].forecastStartTime` 的日期部分 | `YYYY-MM-DD` 字符串 |
 | `text` | `days[].daytime.condition.text` | 白天天气描述字符串 |
+| `icon` | `days[].daytime.condition.code` | QWeather 图标码字符串，如 `104`；直接查现有图标包 |
 | `temp_max` | `days[].temperatureMax.value` | JSON 数值，摄氏度 |
 | `temp_min` | `days[].temperatureMin.value` | JSON 数值，摄氏度 |
 
@@ -765,7 +751,7 @@ STM32 联调顺序：
 是数值而非字符串，STM32 端需按数值读取。示例完整三天均在 384 字节以内：
 
 ```json
-{"api":"daily3d","valid":true,"count":3,"items":[{"date":"2026-09-12","temp_max":29.81,"temp_min":26.03,"text":"阴"},{"date":"2026-09-13","temp_max":30.87,"temp_min":25.16,"text":"小雨"},{"date":"2026-09-14","temp_max":32.45,"temp_min":24.15,"text":"小雨"}]}
+{"api":"daily3d","valid":true,"count":3,"items":[{"date":"2026-09-12","temp_max":29.81,"temp_min":26.03,"text":"阴","icon":"104"},{"date":"2026-09-13","temp_max":30.87,"temp_min":25.16,"text":"小雨","icon":"305"},{"date":"2026-09-14","temp_max":32.45,"temp_min":24.15,"text":"小雨","icon":"305"}]}
 ```
 
 允许服务端返回 1～3 天，以 count 和 items 实际长度为准。缺字段、错误类型、
@@ -776,29 +762,34 @@ STM32 联调顺序：
 `esp_cache response`、`esp_cache daily3d`，每次等待响应后用 `esp_last` 查看。
 `esp_read daily3d` 只确认本地缓存存在，不重新请求天气。
 
+本次天气接口变更已通过 ESP8266 nodemcuv2 编译和主机回归测试（完整降水数组、非零合计、跨日/闰日、时区等价、缺点/乱序、非法数值、超帧拒绝、预报图标、无预警清空）。尚未烧录进行本次实板联调。
+
 ### 分钟降雨缓存 minutely5m
 
 和风路径在 `QWEATHER_MINUTELY_PATH` 中配置，当前为 `/v7/minutely/5m`；地址前缀和密钥复用 `QWEATHER_BASE_URL`、`QWEATHER_API_KEY`。`QWEATHER_MINUTELY_LOCATION` 必须填写实际的 `经度,纬度`，不能使用实时天气的城市 ID；修改配置后需重新编译烧录。
 
-ESP 将和风 `summary` 保留在顶层，`updateTime` 映射为 `source_update_time`，`minutely` 转换为 `items`：
+新格式将逐项 `items` 对象替换为完整的数值 `precip` 数组。**STM32 需要同步修改解析结构，本次是 minutely5m 业务载荷的不兼容变更，命令类型不变。**
 
-| UART 字段 | 来源与含义 |
-| --- | --- |
-| `api` / `valid` | `minutely5m` / 缓存是否有效 |
-| `summary` | 未来两小时降雨描述，完整保留 |
-| `source_update_time` | 和风更新时间 |
-| `count` | 完整 minutely 数组的条数 |
-| `items[].time` | 和风 `fxTime`，完整时间字符串 |
-| `items[].precip` | 和风降水量字符串，保留原始精度 |
-| `items[].type` | 和风降水类型，例如 `rain` |
+| UART 字段 | 类型 | 来源与含义 |
+| --- | --- | --- |
+| `api` / `valid` | string / bool | `minutely5m` / 缓存是否有效 |
+| `start_time` | string | 首个 `fxTime` 原样保留，含 `Z` 或 `±HH:MM` 时区；作为第一个 5 分钟预报区间的开始时间 |
+| `interval_minutes` | number | 固定 `5` |
+| `precip` | number[] | 时间顺序的每 5 分钟累计降水量，单位 mm，不是 mm/h；不再是字符串 |
+| `count` | number | 本帧 precip 数组实际长度；当前完整两小时为 24 |
+| `total_precip` | number | 所有 24 项之和，单位 mm；不乘 5，不除以 12 |
+| `summary` | string，可选 | 两小时降水描述，容量不足时先省略 |
+| `source_update_time` | string，可选 | 原 updateTime；去掉 summary 后仍超限则省略 |
 
-按源数组顺序保留 384 字节内能放下的前几项。提供的 24 条“未来两小时无降水”样例返回前 3 项；`count:24` 不表示本帧包含 24 项。当前无分页或分包，无法通过重复 GET_CACHE 获取其余点。
+参考 [和风分钟降水文档](https://dev.qweather.com/docs/api/minutely/minutely-precipitation/)，上游 precip 是“5 分钟累计降水量，单位毫米”。第 i 项时间为 start_time + i×5 分钟，i 从 0 开始；最后一项起点是 +115 分钟，覆盖到 +120 分钟。type=rain/snow 的降水量均按上游 precip 原样统计，本帧不再输出 type。
 
 ```json
-{"api":"minutely5m","valid":true,"summary":"未来两小时无降水","source_update_time":"2026-09-10T21:50+08:00","count":24,"items":[{"time":"2026-09-10T21:50+08:00","precip":"0.00","type":"rain"},{"time":"2026-09-10T21:55+08:00","precip":"0.00","type":"rain"},{"time":"2026-09-10T22:00+08:00","precip":"0.00","type":"rain"}]}
+{"api":"minutely5m","valid":true,"start_time":"2026-09-10T21:50+08:00","interval_minutes":5,"count":24,"precip":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"total_precip":0,"summary":"未来两小时无降水","source_update_time":"2026-09-10T21:50+08:00"}
 ```
 
-空数组、缺少必需字段、任意条目的字段类型错误，或无法放入描述和至少一项数据时，拒绝更新并保留旧缓存。`fxLink` 和 `refer` 不通过 UART 发送。
+完整输出所有点，不截掉尾部、不补零伪造缺失点。当前契约要求恰好 24 个点，并将带时区的时间换算后校验相邻点相差 300 秒；缺点、乱序、重复、无时区、非法日期/降水量均拒绝更新。未来上游若改变点数或间隔，需重新约定协议，不能把不足两小时的合计叫作两小时总量。
+
+数值须为有限非负数；上游十进制字符串严格转换，拒绝空串、负数、NaN、单位后缀等。总量使用 double 累加，输出 JSON 数值，不保证十进制字符串尾零格式；STM32 按显示精度格式化。容量不足只删除可选元数据；若完整核心字段仍超过 384 字节则拒绝更新，response ok=false，保留旧缓存。不发送 fxLink、refer，summary/updateTime 缺失不妨碍合法序列更新。
 
 ### 天气预警缓存 alert
 
@@ -814,12 +805,14 @@ GET_CACHE alert 返回 `api`、`valid`、`source_update_time`、`count`、`items
 | --- | --- | --- |
 | `id` | `id` | 字符串，必需 |
 | `title` | `title` | 字符串，必需 |
-| `type` | `type` | 可选字符串 |
-| `type_name` | `typeName` | 可选字符串 |
+| `type` | `type` | 必需非空字符串，同时作为 QWeather 预警图标码 |
+| `type_name` | `typeName` | 必需非空字符串，如“高温”；保留上游语言 |
 | `severity` | `severity` | 可选字符串 |
-| `severity_color` | `severityColor` | 可选字符串 |
+| `severity_color` | `severityColor` | 必需字符串，如“蓝色”或 Blue；保留上游值，空值表示未提供颜色 |
 | `status` | `status` | 可选字符串，保留上游状态 |
 | `pub_time` | `pubTime` | 可选字符串 |
+
+根据 [QWeather Icons 使用说明](https://icons.qweather.com/en/usage/)，`warning.type` 直接对应同编号图标，例如 `type="1010"` 对应 `1010.svg` / `qi-1010`。本接口沿用 type，不额外发送重复 icon；STM32 将 type 转为图标查找码，缺少该资源时使用应用默认图标。预警颜色与图标形状独立，不把 severity_color 换算为天气码。当前 ESP 仓库不含 STM32 图标包，因此未验证该包是否收录所有预警图标。
 
 预警正文 `text`、`fxLink` 和 `refer` 不通过 UART 传输。不排序或筛选预警，
 也不截断标题；单帧放不下的剩余条目不会发送，当前没有分页。
@@ -863,17 +856,13 @@ GET_CACHE alert 返回 `api`、`valid`、`source_update_time`、`count`、`items
 
 `STATUS` 示例中的 `stm32_ready` 是 ESP 读取 STM32 状态线的结果；STM32 读取 ESP 就绪线要调用 `EspCom_IsEspReady()`，不要将二者混淆。
 
-实时天气顶层字段可包含 `temp`、`feels_like`、`humidity`、`text`、`icon`、`wind_dir`、`wind_scale`、`wind_speed`、`precip`、`pressure`、`vis`、`obs_time`、`source_update_time`，不使用 `data.now` 包装；当前不产生 `server_time`、`received_at`。温湿度等很多数值是 JSON 字符串，应用层转换时要检查类型、缺失字段和转换结果。`icon` 可供后续调用 `QWeatherIcon_Draw()`，但当前通信模块不会自动绘制。
-
-若实时天气超过 384 字节，依次省略 `vis`、`pressure`、`precip`、`wind_speed`、`wind_scale`、`wind_dir`、`feels_like`；仍超限则拒绝更新，保留旧缓存。各类预报摘要也按实际 UTF-8 字节数限制，不截断字段或输出不完整 JSON。
-
-以下是用于解释字段的简化缓存示例，不要求 ESP 固定返回这组字段：
+实时天气 `current` 仅返回 `api`、`valid`、`temp`、`humidity`、`icon`，温湿度和图标码保持 QWeather 原始字符串类型，三个业务字段必需。不再发送天气文本、体感、风速或更新时间。应用层检查字段类型后转换；图标直接使用 QWeather 图标码。
 
 ```json
-{"api":"current","valid":true,"temp":"31","humidity":"66","text":"多云","icon":"101"}
+{"api":"current","valid":true,"temp":"31","humidity":"66","icon":"101"}
 ```
 
-`daily3d.items` 的文档字段为 `date`、`temp_max`、`temp_min`、`text`；`hourly72h.items` 为 `time`、`temp`、`text`。`count` 可能描述完整缓存数量，不等于本帧 `items` 数组长度，遍历必须以实际数组长度为准。查询 `response` 缓存时，返回 `api` 可能是原始业务名称（如 `current`），不一定是 `response`。
+`daily3d.items` 的文档字段为 `date`、`temp_max`、`temp_min`、`text`、`icon`；`hourly72h.items` 为 `time`、`temp`、`text`。`count` 可能描述完整缓存数量，不等于本帧 `items` 数组长度，遍历必须以实际数组长度为准。查询 `response` 缓存时，返回 `api` 可能是原始业务名称（如 `current`），不一定是 `response`。
 
 所有 JSON 示例都是字段说明，实际序列化后仍必须满足 384 字节上限。当前没有分包重组；不要将完整多日数组直接塞入一帧。
 
@@ -1113,7 +1102,7 @@ USART2_IRQHandler                         Core/Src/stm32f4xx_it.c
 
 ## 8. Shell 调试命令
 
-当前固件另有 `api_time`、`api_refresh [api]`、`api_result` 和 `esp_apis`。`api_time` 实时取时并解析 ACK；`api_refresh` 支持 `current/daily3d/minutely5m/alert/hitokoto/todolist/todolist_inbox`，不接受 `time`。所有托管请求期间，原 `esp_*` 发送命令、修改 Ready 输出和 `ref_epd` 均返回 `HAL_BUSY`；无参数 `esp_ready`、`esp_last` 与 `api_result` 仍可查看状态。底层 C 发送函数不自动管理此占用。
+当前固件另有 `api_time`、`api_refresh [api]`、`api_result` 和 `esp_apis`。`api_time` 实时取时并解析 ACK；`api_refresh` 支持 `current/daily3d/minutely5m/alert/hitokoto/todolist`，不接受 `time`。所有托管请求期间，原 `esp_*` 发送命令、修改 Ready 输出和 `ref_epd` 均返回 `HAL_BUSY`；无参数 `esp_ready`、`esp_last` 与 `api_result` 仍可查看状态。底层 C 发送函数不自动管理此占用。
 
 工程通过 USART1 运行 Letter Shell，可直接测试 ESP 通信。命令定义在 `LetterSh/Src/user_cmd.c`。
 
@@ -1334,7 +1323,7 @@ shellTask(&shell);
 1. 检查就绪状态，调用 `EspCom_RefreshApi("current")`；本地发送失败时记录 HAL 状态，不进入业务成功状态。
 2. 等待对应 `ACK` 或 `ERROR`。ACK 中 `ok=true` 只表示刷新请求已受理；收到 ERROR 时读取 `code`、`message`。
 3. 等待 IO5 恢复 HIGH，再查询 `EspCom_GetCache("response")` 检查本次刷新结果，然后调度 `EspCom_GetCache("current")`，分别等待各自的 CACHE 响应。
-4. 检查 `valid`，结合可用的 `obs_time`、`source_update_time` 等字段判断数据是否更新。`valid=true` 本身不能证明此次刷新已经完成。
+4. 检查 `valid`，并结合本次刷新 response 的 api/ok 及完成流程判断数据是否更新；current 已不再返回 obs_time/source_update_time。`valid=true` 本身不能证明此次刷新已经完成。
 5. 尚未更新时，按业务规定的间隔、次数和总时限继续查询；完成后更新界面，达到时限则记录超时并决定是否保留旧数据。
 
 `EspCom_ReadApi("current")` 或 `EspCom_ReadApi("minutely5m")` 仅检查本地缓存：有缓存时先等 ACK，再用 GET_CACHE 读取；无缓存时返回 ERROR。`daily3d` 支持刷新，首次读取前需先执行 `esp_refresh daily3d`。当前没有主动天气更新推送，不能假定 ACK 后必然自动收到 CACHE。
@@ -1364,7 +1353,7 @@ shellTask(&shell);
 | 半帧恢复 | 解析器没有帧间超时；收到半帧后，后续字节可能被当作旧帧续传，直到满足长度和 CRC 阶段后重置 |
 | UART 错误恢复 | 项目未提供 USART2 专用 `HAL_UART_ErrorCallback` 恢复逻辑；ORE 等错误可能导致中断接收中止，需要另行处理 |
 | 就绪信号 | 两条状态线不是自动流控；拉低 STM32 就绪线不保证 ESP 停发，也不会停止本地 UART |
-| 内容处理 | ApiRefresh 校验 JSON 与请求控制字段，已解析一言和时间；一言成功后绘屏，time 只解析保存，时间/天气尚未接入显示；两种 Todoist 摘要已纳入托管刷新并校验对应 stage，JSON 原样保留，不解析任务或更新显示 |
+| 内容处理 | ApiRefresh 校验 JSON 与请求控制字段，已解析一言和时间；一言成功后绘屏，time 只解析保存，时间/天气尚未接入显示；todolist 已纳入托管刷新，诊断 JSON 原样保留，不解析任务或更新显示 |
 | 帧校验失败 | 错误版本/CRC 等帧不会成为可用帧；无应用错误回调或统计，也不会清除此前合法帧的可用标志 |
 | 大数据 | 单帧载荷最多 384 字节，无分片/重组，API 缓存展开需考虑 UTF-8 实际字节长度 |
 | 多任务使用 | 全局状态无锁；仅支持当前约定的单主循环消费，移植 RTOS 需明确串口和帧状态所有权 |
