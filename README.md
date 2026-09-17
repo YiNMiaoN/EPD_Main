@@ -138,6 +138,8 @@ openocd -f st_nucleo_f4.cfg -c "program build/debug/TopInfo.elf verify reset exi
 | minutely5m | 分钟降雨描述和摘要 | count 是完整数据总数，单帧 items 可能只含前几项 |
 | alert | 天气预警摘要 | valid=true、count=0、items=[] 表示有效的无预警结果 |
 | hitokoto | 一言、出处、作者 | hitokoto、from 为字符串，from_who 可为 null |
+| todolist | 所有项目的今日未完成任务摘要 | stage=today；托管刷新与原始 JSON 输出已接入，未接入 UI |
+| todolist_inbox | Inbox 今天和明天到期的未完成任务摘要 | stage=inbox_next2d；账户时区下两个自然日，未接入 UI |
 | response | 最近一次已受理刷新结果 | 只读结果缓存，检查 valid、业务 api 和 ok；不支持刷新 |
 | time | 实时 NTP 时间 | 仅 READ_API，时间直接放在 ACK，无缓存，不走 REFRESH_API |
 
@@ -161,7 +163,9 @@ ESP 的 Wi-Fi、和风地址/密钥、位置及一言参数在 Net_Node 工程�
 | 6 | esp_cache response，稍等后 esp_last | 确认 valid=true、api=current、ok=true |
 | 7 | esp_cache current，稍等后 esp_last | 获取 valid=true 的实时天气缓存 |
 
-测试其他 API 时，将步骤 4、7 的 current 替换为 daily3d、minutely5m、alert 或 hitokoto；步骤 6 的 response 保持不变。每个 API 完成后再测试下一个。
+测试其他 API 时，将步骤 4、7 的 current 替换为 daily3d、minutely5m、alert、hitokoto、todolist 或 todolist_inbox；步骤 6 的 response 保持不变。每个 API 完成后再测试下一个。
+
+Todoist 托管联调：执行 `api_refresh todolist` 或 `api_refresh todolist_inbox`，随后间隔执行 `api_result`，直到 succeeded/failed。STM32 校验通用控制字段与对应的 today/inbox_next2d 阶段，失败保留 response，成功保存摘要原始 JSON。任务解析与 MainUI 接入尚未实现；count 不是全天总数，has_more 为真也不会自动翻页。详细协议见 [ESP 通信文档](ESP通信README.md)。
 
 tx=0 只说明 STM32 本地发送完成；ACK 只说明 ESP 接受请求；刷新结果缓存中的 ok=true 才表示该次请求及缓存写入成功。刷新失败会保留旧缓存，因此旧数据的 valid=true 不代表最新刷新成功。只有已收到对应刷新 ACK 后，才能按该流程判断本次结果，避免误读此前的 response。
 
@@ -298,7 +302,7 @@ gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh
 
 测试已通过，覆盖请求类型/参数/CRC、就绪状态拦截、HAL 返回值、默认 API、接收校验和长 JSON 输出，以及小数温度、无预警、中文一言和空作者等载荷的原样传输。测试源码不参与固件构建。
 
-刷新库测试同时覆盖五类 API 的完整流程、各阶段超时、JSON 控制字段检查、远端失败保留、SEQ 匹配、esp_last 消费互不干扰、忙碌命令拦截以及空闲时不自动发送。Tick 由测试人工推进，不代表真实 TIM10 周期已经测量。
+刷新库测试同时覆盖七类 API 的完整流程、各阶段超时、JSON 控制字段检查、远端失败保留、SEQ 匹配、esp_last 消费互不干扰、忙碌命令拦截以及空闲时不自动发送。Tick 由测试人工推进，不代表真实 TIM10 周期已经测量。
 
 [MainUI 一言测试](tests/main_ui/README.md) 已通过，覆盖正文转义、作者回退、长度边界、括号和破折号、旧内容保留、重复轮询不重刷、面板唤醒与区域清理；测试使用显示替身，不验证实际外部字模或物理屏幕。
 
@@ -307,7 +311,7 @@ gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh
 ## 已知限制
 
 - **界面仅一言接入实时数据。** 一言成功刷新后更新屏幕，天气等其他区域仍为示例；未启用周期刷新、时钟同步或待办管理。
-- **接收没有完整帧队列。** 底层只保留最近一帧；ApiRefresh 用观察回调另存当前匹配响应，提供串行请求匹配和超时，但不自动重试，也不保存五类 API 的历史缓存。其他调用方需遵守串口占用约定。
+- **接收没有完整帧队列。** 底层只保留最近一帧；ApiRefresh 用观察回调另存当前匹配响应，提供串行请求匹配和超时，但不自动重试，也不保存各类 API 的历史缓存。其他调用方需遵守串口占用约定。
 - **刷新结果依赖 ESP 协议约定。** response 没有绑定刷新请求的事务 ID，8 位 SEQ 会回绕，无法完全排除同 API 旧结果或跨回绕的迟到响应；有效缓存也不保证观测时间最新。
 - **长时间阻塞可能丢字节。** ESP RX FIFO 分配 1024 字节、实际容量 1023；2 Mbps 连续输入时理论上约 5.1 ms 填满。屏幕刷新、日志和延时需要与通信调度协调。当前无专用 UART 错误恢复或半帧超时处理。
 - **载荷上限为 384 字节。** 没有分页/分片重组；分钟降雨和预警只返回可容纳的摘要，count 不一定等于 items 长度。

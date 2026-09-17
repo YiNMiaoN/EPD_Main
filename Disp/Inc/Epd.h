@@ -32,6 +32,8 @@ public:
     void updata_ui();
 
     void refresh();
+    // 先 init + refresh/clear 建立底图；连续局刷之间不复位、不休眠。
+    HAL_StatusTypeDef refreshPartial(uint16_t x, uint16_t y, uint16_t width, uint16_t height);
 
     void sleep();
 };

@@ -190,6 +190,8 @@ int esp_apis(int argc, char *argv[])
     shellWriteString(&shell, "minutely5m: refresh + summary; ESP longitude,latitude config required\r\n");
     shellWriteString(&shell, "alert: refresh + warning summary; valid=true,count=0 means no warnings\r\n");
     shellWriteString(&shell, "hitokoto: refresh + quote; hitokoto/from/from_who (author may be null)\r\n");
+    shellWriteString(&shell, "todolist: today's tasks across projects; stage=today; raw summary, no UI update\r\n");
+    shellWriteString(&shell, "todolist_inbox: Inbox today/tomorrow; stage=inbox_next2d; raw summary, no UI update\r\n");
     shellWriteString(&shell, "time: live NTP via esp_read time; ACK contains time; no cache/refresh\r\n");
     shellWriteString(&shell, "api_time: tracked NTP request; inspect parsed time with api_result\r\n");
     shellWriteString(&shell, "response: last completed refresh result; inspect valid and ok\r\n");

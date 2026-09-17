@@ -2,9 +2,13 @@
 
 本文档说明本工程中 STM32F401RCTx 与 ESP 模块之间的 UART 通信方式。工程由 STM32CubeMX 生成，使用 CLion/CMake 编译；ESP 通信代码主要位于 `FIFO/Inc/Esp_Com.h` 和 `FIFO/Src/Esp_Com.c`。
 
-本文于 2026-09-13 根据新版 Net_Node 对接文档同步 NTP 时间约定。本仓库是 TopInfo STM32 工程，ESP 固件属于独立 Net_Node 工程；文中 `lib/Stm32Com/`、`lib/HeFeng/`、`lib/SystemConfig/AppConfig.h`、`src/main.cpp` 和 ESP开发README.md 均指 ESP 侧文件。STM32 当前有 16 个底层公开接口，另有 [ApiRefresh 库](ApiRefresh/README.md)。新增时间请求、解析和完整联调步骤见 [NTP 时间 API](ApiRefresh/TIME_README.md)。本次只接入取时，尚未接入 RTC、时间显示或局部刷新。
+本文于 2026-09-17 根据当前 STM32 源码核对接口说明，并保留新版 Net_Node 对接文档中的 Todoist 今日待办约定。本仓库是 TopInfo STM32 工程，ESP8266 固件属于独立的 Net_Node 工程。文中 `lib/Stm32Com/`、`lib/HeFeng/`、`lib/Todoist/`、`lib/SystemConfig/AppConfig.h`、`src/main.cpp` 和 `ESP开发README.md` 均指 ESP 侧文件，不在本仓库中。
+
+第 7 节说明全部 16 个底层公开 C/C++ 接口；托管请求由 [ApiRefresh 库](ApiRefresh/README.md) 提供，取时接口及联调步骤见 [NTP 时间 API](ApiRefresh/TIME_README.md)。第 11 节为底层调用示例，第 12 节区分底层协议与当前业务层的实现边界。
 
 当前 ESP 通过 HTTPS 直连和风及一言，不使用 MQTT；已接入实时天气 `current`、三日预报 `daily3d`、分钟降雨 `minutely5m`、天气预警 `alert` 和一言 `hitokoto`。分钟降雨使用 `lib/SystemConfig/AppConfig.h` 中的 `QWEATHER_MINUTELY_LOCATION`（经度,纬度），当前已配置为 `117.65,24.50`。调试与通信共用 UART0，通过 `DEBUG_LOG_ENABLED` 开关控制，当前关闭。
+
+2026-09-17 将 Todoist `todolist` 升级为今日未完成待办摘要（`stage=today`），读取首个服务端分页并生成 384 字节内的串口摘要。所有业务刷新及定时同步由 STM32 发起，ESP 不自主轮询。新增实现位于 `lib/Todoist/`，详细接口见第 6 节。
 
 阅读导航：
 
@@ -25,9 +29,13 @@ FIFO/Inc/Esp_Com.h       ESP 通信协议接口和命令定义
 FIFO/Src/Esp_Com.c       ESP UART 收发、帧解析、CRC 校验
 FIFO/Src/Uart_RTX.c      HAL_UART_RxCpltCallback 分发入口
 LetterSh/Src/user_cmd.c  Letter Shell 中的 ESP 调试命令
+ApiRefresh/Src/ApiRefresh.c       托管请求状态机、响应匹配及阶段超时
+ApiRefresh/Src/ApiTime.c          NTP 时间 ACK 解析
+ApiRefresh/Src/ApiRefresh_Shell.c api_refresh/api_time/api_result 命令
+Core/Src/Epd_Api.cpp             一言刷新结果与显示层衔接
 ```
 
-当前主循环在 `flash_rw == 0` 时运行 ESP 通信、请求状态机与一言显示处理。以下省略外设和 TIM10 启动，完整初始化见 ApiRefresh README：
+当前主循环在 `flash_rw == 0` 时运行 ESP 通信、请求状态机与一言显示处理。以下省略外设、屏幕、Shell 初始化和 TIM10 中断启动，完整流程见 `Core/Src/main.c` 与 ApiRefresh README：
 
 ```c
 EspCom_Init();
@@ -198,7 +206,7 @@ static uint16_t crc16_ccitt(const uint8_t *data, uint16_t length, uint16_t seed)
 0x85  ESP_COM_RSP_ERROR
 ```
 
-建议 ESP 响应时沿用请求帧的 `SEQ`，便于 STM32 后续扩展请求/响应匹配。
+ESP 响应必须沿用对应请求帧的 `SEQ`，当前 STM32 的 ApiRefresh 已依赖该字段匹配请求与响应。
 
 ## 6. Payload 约定
 
@@ -230,6 +238,8 @@ CRC 按 VER TYPE SEQ LEN_H LEN_L PAYLOAD 计算
 | 读取本地缓存 | `0x03` | `{"api":"current"}` | `17` |
 | 请求刷新 API | `0x04` | `{"api":"current"}` | `17` |
 | 请求读取 API | `0x05` | `{"api":"daily3d"}` | `17` |
+| Todoist 今日待办 | `0x04` | `{"api":"todolist"}` | `18` |
+| 读取 Todoist 今日摘要 | `0x03` | `{"api":"todolist"}` | `18` |
 
 完整示例帧：
 
@@ -335,7 +345,7 @@ TYPE = 0x83
 
 ### REFRESH_API
 
-要求 ESP 通过 HTTPS 刷新指定 API。当前支持 `current`、`daily3d`、`alert`、`hitokoto` 和已配置经纬度的 `minutely5m`，其他 API 尚未接入网络刷新。
+要求 ESP 通过 HTTPS 刷新指定 API。当前支持 `current`、`daily3d`、`alert`、`hitokoto`、Todoist 今日待办 `todolist` 和已配置经纬度的 `minutely5m`，其他 API 尚未接入网络刷新。
 
 STM32 发送：
 
@@ -357,7 +367,7 @@ ESP 建议先响应 ACK：
 
 ### READ_API
 
-当前直连模式下，天气和一言的 READ_API 仅检查 ESP 本地缓存，不调用 MQTT 或 HTTP。有缓存时返回 `ACK`、`refresh:false`，随后用 GET_CACHE 获取数据；无缓存时返回 `ERROR/request_failed`。下面 daily3d 的 ACK 示例仅在已成功刷新并填入缓存时成立。`READ_API time` 为实时 NTP 查询，成功时直接在 ACK 中返回时间，不使用缓存，详见下文。
+当前直连模式下，天气、一言和 `todolist` 的 READ_API 仅检查 ESP 本地缓存，不调用 MQTT 或 HTTP。有缓存时返回 `ACK`、`refresh:false`，随后用 GET_CACHE 获取数据；无缓存时返回 `ERROR/request_failed`。下面 daily3d 的 ACK 示例仅在已成功刷新并填入缓存时成立。`READ_API time` 为实时 NTP 查询，成功时直接在 ACK 中返回时间，不使用缓存，详见下文。
 
 STM32 发送：
 
@@ -383,6 +393,8 @@ ESP 建议响应：
 | `minutely5m` | 分钟级降水 | 已接入 `/v7/minutely/5m`，返回描述及单帧摘要；需配置经纬度 |
 | `alert` | 天气预警 | 已接入 `/v7/warning/now`，返回总数和预警摘要；空数组表示无预警 |
 | `hitokoto` | 一言 | 已接入 `v1.hitokoto.cn`，返回句子、出处和作者 |
+| `todolist` | Todoist 今日待办摘要 | 首页最多 5 条，串口摘要最多 384 字节；含标题截断及剩余数据标记，须本地配置 Token |
+| `todolist_inbox` | Inbox 两天内任务 | Inbox 中今天和明天未完成任务，独立缓存，stage=inbox_next2d；STM32 映射待接入 |
 | `time` | 实时网络时间 | 不使用缓存；仅支持 `READ_API time`，直接返回本次 NTP 取时结果 |
 | `airquality` | 空气质量 | UART 缓存返回暂未展开 |
 | `indices` | 生活指数 | UART 缓存返回暂未展开 |
@@ -438,7 +450,245 @@ NTPClient 收包等待约 1 秒，DNS 查询和发送还会增加耗时。STM32 
 联调：先确认就绪，执行 `esp_read time`，等待新响应后执行 `esp_last`，
 检查 TYPE=0x84、api=time、ok=true，并从同一帧读取日期时间。
 
-STM32 已提供跟踪请求的入口 `api_time` / `ApiRefresh_StartTime()`，随后用 `api_result` 查看解析结果；此方式自动匹配 SEQ，等待 Ready 最多 15 秒、等待时间 ACK 最多 10 秒，失败保留原始响应，不自动重试。`has_time=true` 且 state=succeeded 才能读取结果结构。原 `esp_read time` 仍是原始调试命令，不填入库结果。时间获取不更新 MainUI，详见 [TIME_README](ApiRefresh/TIME_README.md)。
+STM32 已提供跟踪请求的入口 `api_time` / `ApiRefresh_StartTime()`，随后用 `api_result` 查看解析结果；此方式自动匹配 SEQ，等待 Ready 最多 15 秒、等待时间 ACK 最多 10 秒，失败保留原始响应，不自动重试。`has_time=true` 且 `state=succeeded` 才能读取结果结构。原 `esp_read time` 仍是原始调试命令，不填入库结果。时间获取不更新 MainUI，详见 [TIME_README](ApiRefresh/TIME_README.md)。
+
+### Todoist 今日待办 todolist（只读摘要）
+
+ESP 仅响应 STM32 的显式刷新，不主动轮询、不自动重试、不执行写操作。当前获取 Todoist 账户时区下今天到期的未完成任务，不包含逾期或已完成任务。本次由 `http_probe` 升级为 `today`，HTTP 200 后还必须完整接收、解析、校验正文并写入缓存，才算业务成功。固件实现与实板验证分开记录。
+
+请求由 `EspCom_RefreshApi("todolist")` / `esp_refresh todolist` 发起：
+
+```text
+TYPE    = 0x04
+PAYLOAD = {"api":"todolist"}
+LEN     = 18
+```
+
+ESP 回复原 SEQ 的 `ACK (0x84)`：
+
+```json
+{"ok":true,"api":"todolist","refresh":true}
+```
+
+ACK 仅表示排队。ESP 先发送 ACK，再执行 NTP 校验证书时间和 HTTPS 请求；期间 IO5 为 LOW，结束后恢复联网/忙碌状态。NTP 仅服务本次 TLS，不启动后台同步、不发送额外 time 帧。STM32 继续轮询串口，不能将 ACK 当成获取任务成功。
+
+#### 网络请求与 Apifox 配置
+
+| 项目 | 值 |
+| --- | --- |
+| Method | `GET` |
+| URL | `https://api.todoist.com/api/v1/tasks/filter` |
+| Query | `query=today&lang=en&limit=5` |
+| Authorization | `Bearer <个人 API Token>`，只填 Header |
+| Accept / Accept-Encoding | `application/json` / `identity` |
+| Body | 无 |
+| 服务端正文 | `{"results":[...],"next_cursor":null}`，cursor 也可为字符串 |
+
+可导入 Net_Node 工程的 `docs/Todoist.Apifox.openapi.json`；其中 `/projects` 仅供辅助查询，固件不调用。配置统一位于 `lib/SystemConfig/AppConfig.h`：`TODOIST_API_TOKEN`、`TODOIST_BASE_URL`、`TODOIST_TASKS_PATH=/api/v1/tasks/filter`、`TODOIST_QUERY=query=today&lang=en&limit=5`。修改后重新编译烧录，不在日志输出 Token。
+
+TLS 使用 `lib/Todoist/TodoistTrust.h` 的 Amazon Root CA 1，验证证书、不跟随重定向。HTTP 读取超时为 5000 ms，不是整个请求总时限。正文解分块后限制为 4096 字节，超限拒绝；不接受压缩正文。JSON 解析前释放 TLS 对象。当前不自动翻页，不能将第一页当成全天完整列表。
+
+#### 本次结果：GET_CACHE response
+
+STM32 等待完成后读取 `response` 并确认 `api=todolist`：
+
+```json
+{"api":"todolist","valid":true,"ok":true,"uptime_ms":123456,"message":"refresh completed","stage":"today","http_status":200,"transport_error":0,"code":"json_ok"}
+```
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `valid` | bool | 结果记录可读，不代表业务成功 |
+| `ok` | bool | HTTP 200、JSON 接收解析、字段校验及缓存写入均成功 |
+| `stage` | string | 固定 `today`，替代旧 `http_probe` |
+| `http_status` | int | 实际 HTTP 状态，尚未收到响应为 0 |
+| `transport_error` | int | GET 返回的负数错误；正文读取失败另见 code |
+| `uptime_ms` | uint32 | 操作结束时 ESP millis，存在回绕 |
+
+| code / 状态 | 含义与处理 |
+| --- | --- |
+| `json_ok` / 200 | 今日摘要写入成功，包括合法空列表 |
+| `not_configured`、`invalid_token_config` | Token 未配置或格式非法，不发请求 |
+| `wifi_disconnected`、`ntp_failed`、`http_begin_failed` | 本地联网、校时或初始化失败 |
+| `tls_or_transport_error` / 0 | DNS/TLS/连接等失败，检查 transport_error |
+| `http_error` / 401、403、429、其他 | 保留实际 HTTP 状态，STM32 决定后续处理 |
+| `unsupported_encoding` / 200 | 服务端返回了不支持的 Content-Encoding |
+| `body_too_large`、`body_read_failed` / 200 | 正文超限或未完整接收 |
+| `bad_json` / 200 | JSON 解析失败或根节点不是对象 |
+| `out_of_memory` | 接收缓冲或 JSON 分配失败，HTTP 状态可能为 0 或 200 |
+| `cache_rejected` / 200 | 字段不合法或不能生成合规串口摘要 |
+
+失败仍记录本次 response，保留上次成功的 todolist 缓存；旧缓存可能来自前一天，不能当成本次今日数据。请求受理前离线/忙碌则直接 `ERROR/not_ready`，不覆盖 response。response 为全业务共享最后结果，STM32 应串行发起和消费刷新。
+
+#### 最近成功数据：GET_CACHE todolist
+
+以下仅为格式示例，并非真实账户数据：
+
+```json
+{"api":"todolist","valid":true,"stage":"today","http_status":200,"checked_at_ms":123456,"count":1,"has_more":false,"items":[{"id":"abc123","due":"2026-09-17","tz":null,"content":"检查设备","title_cut":false}]}
+```
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `api` / `valid` | string / bool | `todolist` / 是否存在成功缓存 |
+| `stage` / `http_status` | string / int | `today` / 最近成功请求的 200 |
+| `checked_at_ms` | uint32 | ESP 接收解析成功的 millis，不是日期或服务器时间 |
+| `count` | uint | 本次服务端第一页条数，0～5，**不是全天总数，也不一定等于 items 长度** |
+| `has_more` | bool | 服务端还有下一页，或串口容量导致本页部分条目未输出 |
+| `items` | array | 384 字节单帧内能容纳的条目；顺序沿用服务端，不保证时间排序 |
+| `items[].id` | string | 原样任务 ID，不转整数、不截断 |
+| `items[].due` | string | 原样 due.date，可为日期、无时区时间或 UTC Z 时间 |
+| `items[].tz` | string/null | 原样 due.timezone；null 不代表 UTC，浮动时间按账户语义解释 |
+| `items[].content` | string | UTF-8 标题，最多 96 字节；必要时进一步缩短首条标题 |
+| `items[].title_cut` | bool | 标题是否截短；不会从 UTF-8 字符中间截断 |
+
+服务端空列表成功时返回 `count=0,items=[],has_more=false`，用于清除旧待办。字段校验覆盖本页所有条目，包括因容量未输出的条目。若非空页连一条也装不下则拒绝更新。当前没有继续读取下一页的串口命令；完整列表需要后续设计分页协议，不能仅增大 limit。
+
+启动后无成功缓存返回 `valid=false`、`message="cache not available"`。`READ_API todolist` 只检查缓存，返回 `ACK/refresh:false`，不重新联网。类型编号仍为 0x01～0x05，不新增 0x06。
+
+STM32 已有 `ESP_COM_API_TODOLIST`，托管入口 `ApiRefresh_Start(ESP_COM_API_TODOLIST)` / `api_refresh todolist`，随后 `api_result` 查看终态及原始 JSON；`esp_apis` 已列出它。托管层校验通用控制字段及有效 response/cache 的顶层 stage=today，成功保存 todolist 缓存，失败保留 response，不同时保存两帧。STM32 侧后续需按上述字段增加任务解析/UI；旧 http_probe 阶段已不再接受。ESP 不启动周期请求。
+
+#### 正文缓冲分配时机
+
+正文缓冲延后到 HTTP 200 且编码/长度检查通过后申请，TLS 握手期间不预占这 4096 字节。外层 `unique_ptr` 持有正文，接收用的 BoundedBody 仅在分配成功后创建；HTTP/TLS 对象退出作用域后，再解析正文。分配失败返回 `out_of_memory`、`http_status=200`，保留旧缓存。
+
+此调整针对实板 `ssl_error=-1000`（TLS 结构或缓冲内存分配失败），减少握手阶段的同时占用；并不增加物理 RAM，TLS 连接建立后仍占用内存，因此仍需结合实际响应大小评估余量。查看 `connect/request start`、`body allocation start (after HTTP 200)` 和 `cache update`，区分握手失败、正文分配失败和最终成功。堆接收缓冲现已从 8192 调整为 4096 字节；TLS 缓冲大小、证书校验及串口协议字段保持原样。
+
+用户实板反馈：延后分配后仍出现内存不足，将正文缓冲改为 4096 字节后已能正常读取；Apifox 本次响应约 1.29 KB。此记录来自用户反馈，不代表已验证更大响应或长时间运行。超限仍返回 `body_too_large` 并保留旧缓存。
+
+#### ESP 串口请求诊断日志
+
+`lib/SystemConfig/AppConfig.h` 的 `DEBUG_LOG_ENABLED=true` 时启用，修改后重新编译烧录。UART0 为 2000000、8N1；日志以 `[Todoist]` 开头，与二进制协议共用串口，联调 STM32 正式协议时应关闭文本日志。电脑可直接发送带 CRC 的协议帧触发刷新，单独打开串口不会自动请求。
+
+日志按顺序打印：请求开始及 Wi-Fi 状态、空闲堆/最大连续块；NTP 开始、UTC 秒与耗时；GET 地址及脱敏请求头；连接/请求结果与耗时；正文声明长度和编码；HTTP 200 后的内存状态及 4096 字节接收缓冲分配；实际读取字节数；JSON 解析结果与本页条数；fetch 结束与缓存写入结果。不打印 Token、Authorization 原值、完整响应正文或任务标题。
+
+连接失败时在清理客户端前读取 BearSSL 错误码和说明。`http_error=-1` 只说明连接失败，`ssl_error=0` 也不能证明网络正常，需要结合 DNS/TCP 路径判断。`fetch end ok=1` 仅表示获取和 JSON 解析成功，最终业务成功还需 `cache update ok=1`。失败路径同样有结束日志；其中 heap/max_block 是打印时的瞬时值，局部对象可能尚未析构，不代表函数返回后的空闲内存。
+
+日志使用 millis 差值计时，不额外发送 DNS/TCP 探测请求、不自动重试，不改变缓存字段和协议类型。
+
+#### 历史实板联调记录（2026-09-17：请求与 ACK 链路已通）
+
+以下为用户提供的实板串口日志，记录托管刷新入口的实际响应：
+
+```text
+letter:/$ api_refresh todolist
+api refresh start=0
+Return: 0, 0x00000000
+
+letter:/$ api_result
+api=todolist state=wait_finish
+error=none stage=idle tx=0
+type=0x84 seq=1 len=43 payload={"ok":true,"api":"todolist","refresh":true}
+Return: 0, 0x00000000
+```
+
+| 观察项 | 本次日志能够确认的结论 |
+| --- | --- |
+| `start=0` | STM32 已受理本地托管刷新请求 |
+| `tx=0` | 本次 UART 发送返回 HAL_OK |
+| `type=0x84`、`seq=1`、ACK 的 `ok=true/refresh=true` | STM32 已收到并匹配 ESP 的刷新受理 ACK，请求与响应链路已通 |
+| `state=wait_finish` | ACK 已通过检查，状态机正在等待 ESP 完成；尚未取得本次刷新结果及最终验证缓存 |
+| `error=none stage=idle` | 尚未记录失败；`stage` 表示失败阶段，当前的 `idle` 不表示整个请求空闲或已完成 |
+| `api_result` 的 `Return: 0` | 查询命令正常返回，不代表 Todoist HTTP 验证成功 |
+
+本次实板证据确认到 **STM32 ↔ ESP 的请求/ACK 通信及状态机推进**，日志尚无 `http_status` 或 `state=succeeded`，因此暂不记录为 ESP → Todoist 的 HTTP 200 验证成功，也不表示待办数据已获取。
+
+接下来间隔执行 `api_result`，直到 `state=succeeded` 或 `state=failed`，保留完整输出。托管流程会自动查询 `response` 和 `todolist` 缓存，无需手工追加 `esp_cache`；忙碌期间也不要重复发起刷新。成功时核对最终缓存中的 `api=todolist`、`valid=true`、`stage=today` 和 `http_status=200`；失败时查看 `error`、失败 `stage` 及保留的原始 payload。`wait_finish` 沿用 60 秒阶段超时，单次看到该状态属于正常中间过程。
+
+#### 空 response 故障跟进（用户实板反馈：已解决）
+
+在上述 ACK 后，用户曾观察到：
+
+```text
+api=todolist state=failed
+error=invalid_response stage=wait_result tx=0
+type=0x83 seq=2 len=64 payload={"api":"response","valid":false,"message":"cache not available"}
+```
+
+用户后续确认根因是 ESP 内存不足，问题已解决。此结论来自用户实板排查反馈；本仓库未独立抓取 ESP 故障现场。此前“查询过早/Ready 时序”等仅是排查假设，不作为本次确定根因。STM32 不为该故障新增延迟、自动重试或忽略空缓存。
+
+日志中的 invalid_response 来自先检查业务 api：期望 todolist，却收到空记录的 api=response，因此在 valid=false 分类前结束。现有错误分类保持不变。问题解决不等同于新增 Inbox 接口或任务 UI 已完成端到端验证。
+
+#### 底层联调步骤（托管请求空闲时使用）
+
+1. Apifox 发送上述 GET，检查 HTTP 200 及 results/next_cursor。
+2. 本地配置 Token、编译烧录；检查 Wi-Fi 与 IO5 就绪。
+3. 执行 `esp_refresh todolist`，等待 ACK；勿连续粘贴所有命令。
+4. IO5 恢复 HIGH 后执行 `esp_cache response`，核对 `ok=true,stage=today,code=json_ok`。
+5. 执行 `esp_cache todolist`，检查 items、count、has_more 和 title_cut。
+6. 后续刷新或定时同步由 STM32 调度。托管入口自动完成第 3～5 步，wait_finish 超时仍为 60 秒。
+
+Net_Node 中 `test/todoist_http_probe.py` 使用本地配置执行同一只读请求，输出状态及本页条数，不输出 Token 或任务标题。本机成功不能替代 ESP 的 UART/NTP/TLS 实板验证。
+
+2026-09-17 本次验证：主机只读请求 HTTP 200，第一页 3 条、无下一页；未输出任务标题。`nodemcuv2` 固件编译及主机协议/缓存测试通过；尚未烧录验证本次 ESP 获取路径。
+
+### Todoist 收件箱临近任务 todolist_inbox
+
+新增独立 API 名 `todolist_inbox`，只读 Todoist Inbox 项目中今天和明天到期的未完成任务。日期按 Todoist 账户时区解释，是两个自然日，不是从当前时刻滚动 48 小时；不包含逾期、无日期、后天及更远日期或已完成任务。原 `todolist` 仍为所有项目的今日待办；两份缓存独立，任务可以在两个视图中同时出现。
+
+#### 网络请求与配置
+
+| 项目 | 值 |
+| --- | --- |
+| Method / URL | `GET https://api.todoist.com/api/v1/tasks/filter` |
+| query | `#Inbox & (today \| tomorrow)` |
+| lang / limit | `en` / `2` |
+| Header | 与今日待办相同，使用同一 Bearer Token |
+| 配置 | `lib/SystemConfig/AppConfig.h` 中新增 `TODOIST_INBOX_QUERY` |
+
+固件 URL：
+
+```text
+https://api.todoist.com/api/v1/tasks/filter?query=%23Inbox%20%26%20%28today%20%7C%20tomorrow%29&lang=en&limit=2
+```
+
+Apifox 的 Query 参数填写未编码的 `#Inbox & (today | tomorrow)`，由工具编码；不要重复编码。`#`、`&`、`|` 在 URL 中必须编码，尤其裸 `#` 会成为片段而不发送给服务器。筛选语法参考 [Todoist 官方过滤器说明](https://www.todoist.com/help/todoist/features/introduction-to-filters-V98wIH)。`test/todoist_http_probe.py --inbox` 使用相同配置执行本机只读验证，输出状态、正文字节数和本页条数，不打印 Token/标题。
+
+本机验证发现 Inbox 的 limit=5 正文超过 4096 字节，因此 Inbox 单独采用 limit=2；limit=2 实测正文 6237 字节，其中首条 description 为 4121 字节。按用户决定继续保留 4096 字节完整正文接收，不丢弃或过滤描述；用户将在 Todoist 侧缩短描述后重测。目前这份数据会返回 body_too_large，不能记录为固件获取成功。条数限制仍不保证字节数一定满足上限。
+
+#### 串口请求与缓存
+
+| 操作 | TYPE | PAYLOAD | LEN |
+| --- | --- | --- | --- |
+| 刷新 Inbox | `0x04` | `{"api":"todolist_inbox"}` | `24` |
+| 获取 Inbox 缓存 | `0x03` | `{"api":"todolist_inbox"}` | `24` |
+| 检查 Inbox 缓存 | `0x05` | `{"api":"todolist_inbox"}` | `24` |
+
+上述 LEN 以实际 UTF-8 字节数为准。
+
+受理 ACK 示例：
+
+```json
+{"ok":true,"api":"todolist_inbox","refresh":true}
+```
+
+流程仍为 ACK → 等待 Ready → GET_CACHE response → GET_CACHE todolist_inbox。response 中 `api=todolist_inbox`、`stage=inbox_next2d`，只有 `ok=true,code=json_ok` 才表示本次成功。Inbox 缓存同样使用 `api=todolist_inbox,stage=inbox_next2d`，其余字段与今日摘要一致：`valid,http_status,checked_at_ms,count,has_more,items`，条目字段为 `id,due,tz,content,title_cut`。
+
+复用延后分配的 4096 字节接收上限、Inbox 首页最多 2 条（今日接口仍为 5 条）和 384 字节串口摘要。`count` 为本页条数，不是总数；`has_more` 表示服务端还有页或摘要未装下本页全部任务，不支持自动翻页。空列表清除 Inbox 旧数据；请求/校验失败保留 Inbox 旧缓存，不影响今日缓存。增加一个缓存槽，在 ESP8266 上约增加 400 字节常驻 RAM；仍只有一个待执行请求，不并行创建两个 TLS 客户端。
+
+**STM32 对接状态**：已新增 `ESP_COM_API_TODOLIST_INBOX`、API 白名单和 Shell 说明，可执行 `api_refresh todolist_inbox`，随后通过 `api_result` 查看结果。有效 response/cache 必须具有顶层 `stage=inbox_next2d`，今日接口则要求 `stage=today`；旧 http_probe、缺失、重复、错误类型或错视图 stage 均拒绝。仍复用单请求槽和 384 字节帧，不并发刷新。任务字段原样保留，尚未建立任务数据模型或更新 UI。此接入不代表已通过 STM32 Inbox 实板验证，帧类型仍为 0x01～0x05。
+
+#### 电脑串口 HEX 联调
+
+2000000、8N1，HEX 发送、不加换行、不循环发送。只连接电脑发送端，避免与 STM32 同时驱动 ESP RX。依次发送，刷新受理后等待 IO5 就绪再查询；response 是共享的最后结果，需要核对 api。
+
+刷新（SEQ=20）：
+
+```text
+AA 55 01 04 14 00 18 7B 22 61 70 69 22 3A 22 74 6F 64 6F 6C 69 73 74 5F 69 6E 62 6F 78 22 7D 57 D5
+```
+
+查询 response（SEQ=21）：
+
+```text
+AA 55 01 03 15 00 12 7B 22 61 70 69 22 3A 22 72 65 73 70 6F 6E 73 65 22 7D A9 AA
+```
+
+读取 Inbox（SEQ=22）：
+
+```text
+AA 55 01 03 16 00 18 7B 22 61 70 69 22 3A 22 74 6F 64 6F 6C 69 73 74 5F 69 6E 62 6F 78 22 7D 82 F5
+```
 
 ### 一言缓存 hitokoto
 
@@ -483,8 +733,8 @@ STM32 联调顺序：
 
 三日预报已替代七日预报入口。旧名称 `daily7d` 不再注册：GET_CACHE 返回
 `unknown cache api`，REFRESH_API/READ_API 返回 `request_failed`。STM32 端应改为
-显式使用 `daily3d`。当前 STM32 Shell 的 `esp_read` 无参默认 daily3d，
-底层 `EspCom_ReadApi(NULL)` 默认 current，调用时间接口请显式传 time。
+显式使用 `daily3d`。当前 STM32 Shell 的 `esp_read` 无参默认 `daily3d`，
+底层 `EspCom_ReadApi(NULL)` 默认 `current`，调用时间接口请显式传 `time`。
 
 请求为 `{QWEATHER_BASE_URL}/weather/v1/daily/24.62/118.06?key={QWEATHER_API_KEY}&days=3&localTime=true`。
 以下配置均位于 `lib/SystemConfig/AppConfig.h`：
@@ -599,6 +849,8 @@ GET_CACHE alert 返回 `api`、`valid`、`source_update_time`、`count`、`items
 
 失败时 `ok:false`，`message` 为 `refresh failed; previous cache retained`。请求在排队前被拒绝时返回 ERROR，不覆盖 response 记录；启动后尚无已完成刷新时，response 缓存无效。
 
+`todolist` 在本阶段追加 `stage`、`http_status`、`transport_error`、`code`；字段与诊断含义见前文 Todoist 小节。其他业务结果字段保持不变。
+
 ### 响应载荷的读取规则
 
 | 响应类型 | 应用层重点检查 |
@@ -606,7 +858,7 @@ GET_CACHE alert 返回 `api`、`valid`、`source_update_time`、`count`、`items
 | `PONG (0x81)` | 链路响应，可含 `ok`、`uptime_ms` |
 | `STATUS (0x82)` | `ok`、`wifi`、`mqtt`、`stm32_ready`、`uptime_ms` |
 | `CACHE (0x83)` | `valid`、`api` 及业务字段；无效缓存不能用于更新界面 |
-| `ACK (0x84)` | `ok`、`api`、`refresh`；天气刷新仅确认受理；`time` 的 ACK 直接携带成功获取的时间 |
+| `ACK (0x84)` | `ok`、`api`、`refresh`；天气及 Todoist 刷新仅确认受理；`time` 的 ACK 直接携带成功获取的时间 |
 | `ERROR (0x85)` | `code`、`message`；这是 ESP 业务/协议错误，不是 HAL 返回码 |
 
 `STATUS` 示例中的 `stm32_ready` 是 ESP 读取 STM32 状态线的结果；STM32 读取 ESP 就绪线要调用 `EspCom_IsEspReady()`，不要将二者混淆。
@@ -654,6 +906,8 @@ GET_CACHE alert 返回 `api`、`valid`、`source_update_time`、`count`、`items
 | `EspCom_SetFrameObserver` | 注册唯一合法帧观察回调，当前由 ApiRefresh 使用 |
 | `EspCom_GetTxSequence` | 获取最近一次分配的发送序号，供请求匹配使用 |
 
+`EspCom_SetFrameObserver(EspCom_FrameObserver observer)` 的回调在 `EspCom_Poll()` 中对每个合法帧执行，不在 UART 中断内执行；回调不能递归发送或轮询。`ApiRefresh_Init()` 会注册自己的回调，业务代码不能另行覆盖，否则托管请求无法取得响应。`EspCom_GetTxSequence(void)` 返回 `uint8_t` 序号；ApiRefresh 在发送成功后保存该值并匹配响应。序号会回绕，不能作为永久唯一的事务标识。
+
 ### 7.2 接收数据结构 `EspCom_Frame`
 
 ```c
@@ -671,7 +925,7 @@ typedef struct {
 | --- | --- |
 | `ver` | 已通过版本检查，当前为 `0x01` |
 | `type` | 对端发送的类型，调用方需要自行判断 |
-| `seq` | 对端发送的序号，协议层不自动匹配请求 |
+| `seq` | 对端响应沿用的请求序号；底层只保存，ApiRefresh 使用它匹配托管请求 |
 | `len` | 有效载荷字节数，范围 `0..384` |
 | `payload` | 容量 385 字节，有效数据是前 `len` 字节 |
 | `crc` | 收到并校验通过的 CRC，已组装为本机 `uint16_t` |
@@ -850,15 +1104,16 @@ USART2_IRQHandler                         Core/Src/stm32f4xx_it.c
   -> EspCom_Poll                         主循环
   -> AA55 / 长度 / 版本 / CRC 解析校验
   -> esp_last_frame + esp_frame_ready
-  -> EspCom_GetLastFrame                 应用读取
-  -> EspCom_ClearFrame                   应用消费标志
+     -> 帧观察回调                      ApiRefresh 另存匹配响应
+     -> EspCom_GetLastFrame             应用读取最近帧
+        -> EspCom_ClearFrame            应用消费最近帧标志
 ```
 
 不要在其他文件再次定义 `HAL_UART_RxCpltCallback()`。若调整分发入口，要保留 USART1 原有分支。当前回调忽略 FIFO 满时的失败以及 HAL 重启接收的返回值，异常恢复限制见第 12 节。
 
 ## 8. Shell 调试命令
 
-当前固件另有 `api_time`、`api_refresh [api]`、`api_result` 和 `esp_apis`。api_time 实时取时并解析 ACK；api_refresh 仅支持原五类天气/一言刷新，不接受 time。所有托管请求期间，原 esp_* 发送命令、修改 Ready 输出和 ref_epd 均返回 HAL_BUSY；无参数 esp_ready、esp_last 与 api_result 仍可使用。底层 C 发送函数不自动管理此占用。
+当前固件另有 `api_time`、`api_refresh [api]`、`api_result` 和 `esp_apis`。`api_time` 实时取时并解析 ACK；`api_refresh` 支持 `current/daily3d/minutely5m/alert/hitokoto/todolist/todolist_inbox`，不接受 `time`。所有托管请求期间，原 `esp_*` 发送命令、修改 Ready 输出和 `ref_epd` 均返回 `HAL_BUSY`；无参数 `esp_ready`、`esp_last` 与 `api_result` 仍可查看状态。底层 C 发送函数不自动管理此占用。
 
 工程通过 USART1 运行 Letter Shell，可直接测试 ESP 通信。命令定义在 `LetterSh/Src/user_cmd.c`。
 
@@ -890,9 +1145,9 @@ esp_last
 
 每条请求命令只发送，不等待 ESP 响应。发送后等待对端返回、让主循环继续轮询，再运行 `esp_last`；不要一次粘贴全部命令并假定每次 `esp_last` 都能立即读到对应响应。`esp_last` 成功打印后会消费帧标志，再执行一次可能显示 `no esp frame`。
 
-`esp_ready` 无参数时仅读取并打印 ESP 就绪状态，不修改 PB0，也没有查询 PB0 电平的功能。虽然当前打印文本含 `stm32_ready set`，无参数调用并没有执行设置。带参数时源码只将字符串 `"0"` 解释为低，其他字符串均解释为高，联调请明确使用 `0` 或 `1`。
+`esp_ready` 无参数时仅读取并打印 ESP 就绪状态，不修改 PB0，也没有查询 PB0 电平的功能。带参数时只接受单个 `0` 或 `1`，非法参数返回 `HAL_ERROR`；托管请求忙碌期间，带参数调用返回 `HAL_BUSY`，不修改就绪输出。
 
-若业务主循环已经自动读取并清除最近帧，Shell 的 `esp_last` 可能读不到该帧；二者使用的是同一个接收槽，不是两份独立缓存。
+若其他业务代码读取并清除最近帧，Shell 的 `esp_last` 可能读不到该帧；二者使用同一个最近帧槽。当前 ApiRefresh 使用观察回调保存匹配响应的独立副本，因此 `esp_last` 清除最近帧标志不会影响托管请求处理，`api_result` 也不会消费结果。
 
 ## 9. ESP 侧实现要求
 
@@ -1056,19 +1311,23 @@ static void AppEsp_Poll(void)
 
 `%s` 在此仅用于约定的 JSON 文本联调，若扩展为二进制协议则应按 `frame.len` 输出或处理。Shell 输出是阻塞的，连续高流量场景应降低日志量。
 
-在原 `flash_rw == 0` 主循环分支中，用 `AppEsp_Poll()` 替换单独的 `EspCom_Poll()`，保留 `shellTask(&shell)`。这两个 `AppEsp_*` 名字是本文示例辅助函数，不是通信模块已有接口。
+这两个 `AppEsp_*` 名字是本文示例辅助函数，不是通信模块已有接口。若试用该底层日志示例，只替换原 `EspCom_Poll()` 调用，仍须保留已有的 `ApiRefresh_Poll()`、`EPD_UI_Poll()` 和 `shellTask(&shell)`；通常直接用 `esp_last` 和 `api_result` 即可查看响应。
 
 ```c
 /* Inside the existing flash_rw == 0 branch. */
 AppEsp_Poll();
+ApiRefresh_Poll();
+EPD_UI_Poll();
 shellTask(&shell);
 ```
 
-请求函数由应用事件调用一次。只有开始接入业务自动消费帧时才使用上述轮询辅助函数；这时 `esp_last` 与它共享帧消费权，应统一由一个地方处理接收结果。
+请求函数由应用事件调用一次，直接发送底层请求前应检查 `ApiRefresh_IsBusy()`，避免与托管请求竞争串口。上述日志辅助函数与 `esp_last` 共享最近帧槽，应统一其消费位置。ApiRefresh 通过观察回调另存当前匹配响应，`EspCom_ClearFrame()` 不会清除该副本。
 
 收到 `CACHE` 后，后续业务层应依次检查预期请求、解析 JSON、检查 `valid` 和业务名称、提取所需字段，再更新显示数据。即便 `GetLastFrame()` 成功，也不能直接假定载荷是实时天气或有效 JSON。当前示例不提供完整请求匹配机制。
 
 ### 11.4 请求刷新后获取新缓存
+
+当前工程的五类天气/一言请求及 `todolist` 刷新已经由 `ApiRefresh_Start()` / `api_refresh` 实现 ACK 检查、等待 ESP 就绪、读取 `response` 和目标缓存，并提供阶段超时；无需重新实现同一状态机。以下是底层流程说明，供理解和逐步联调参考，不表示当前库会自动重试或反复查询。
 
 建议应用按以下状态推进，每一步等待时主循环仍持续轮询：
 
@@ -1088,7 +1347,7 @@ shellTask(&shell);
 4. 运行 `esp_cache minutely5m`、`esp_last`，读取描述和预报摘要；按 items 实际长度遍历。
 5. `esp_read minutely5m` 只确认缓存存在，不访问和风、不更新天气。
 
-响应等待超时由应用自行实现，可使用 `uint32_t` 保存 `HAL_GetTick()`，通过 `(uint32_t)(HAL_GetTick() - start_tick) >= timeout_ms` 判断，以处理计数回绕。具体时限由 ESP 和后端响应速度决定，不能直接把发送函数的 1000 ms 当作业务响应时限。
+托管请求使用 TIM10 驱动的 `ApiRefresh_Tick1ms()` 计时并处理阶段超时，具体配置见 [ApiRefresh README](ApiRefresh/README.md)。原始 `esp_*` 命令只发送，不自动等待或重试；自行编写底层流程时需另行管理超时，并用无符号计数差处理回绕。发送函数的 1000 ms 参数仅限制本地 UART 发送等待，不是业务响应时限。
 
 ## 12. 当前实现边界
 
@@ -1099,13 +1358,13 @@ shellTask(&shell);
 | 轮询间隔 | 理想连续满速输入时，空 FIFO 约 5.1 ms 填满；这是理论容量估算，不是实测安全调度周期 |
 | 完整帧缓存 | 只有一个最近帧槽；一次 `Poll()` 内多帧也会相互覆盖，没有完整帧队列 |
 | 帧消费 | `HasFrame`/`GetLastFrame` 不消费；`ClearFrame` 只清标志，Shell 和业务共享状态 |
-| 请求匹配 | 底层提供 GetTxSequence 和观察回调，ApiRefresh 匹配 SEQ 与控制字段；8 位序号会回绕，无自动重试 |
-| 多请求并发 | ApiRefresh 共用一个天气/一言/取时请求槽，忙碌时拒绝新请求，直接调用底层发送仍需自行协调 |
-| 响应等待 | 托管请求使用 TIM10 超时；原始 esp_* 命令只发送，调用方需自行等待 |
+| 请求匹配 | 底层提供 GetTxSequence 和观察回调，ApiRefresh 匹配 SEQ、响应类型与 JSON 控制字段；8 位序号会回绕，无自动重试 |
+| 多请求并发 | ApiRefresh 共用一个天气/一言/取时请求槽，忙碌时拒绝新请求；无请求队列，直接调用底层发送仍需自行协调 |
+| 响应等待 | 托管请求使用 TIM10 阶段超时；原始 esp_* 命令只发送，调用方需自行等待 |
 | 半帧恢复 | 解析器没有帧间超时；收到半帧后，后续字节可能被当作旧帧续传，直到满足长度和 CRC 阶段后重置 |
 | UART 错误恢复 | 项目未提供 USART2 专用 `HAL_UART_ErrorCallback` 恢复逻辑；ORE 等错误可能导致中断接收中止，需要另行处理 |
 | 就绪信号 | 两条状态线不是自动流控；拉低 STM32 就绪线不保证 ESP 停发，也不会停止本地 UART |
-| 内容处理 | 已校验请求控制字段，解析一言和时间；一言成功后绘屏，time 只解析保存，时间/天气尚未接入显示 |
+| 内容处理 | ApiRefresh 校验 JSON 与请求控制字段，已解析一言和时间；一言成功后绘屏，time 只解析保存，时间/天气尚未接入显示；两种 Todoist 摘要已纳入托管刷新并校验对应 stage，JSON 原样保留，不解析任务或更新显示 |
 | 帧校验失败 | 错误版本/CRC 等帧不会成为可用帧；无应用错误回调或统计，也不会清除此前合法帧的可用标志 |
 | 大数据 | 单帧载荷最多 384 字节，无分片/重组，API 缓存展开需考虑 UTF-8 实际字节长度 |
 | 多任务使用 | 全局状态无锁；仅支持当前约定的单主循环消费，移植 RTOS 需明确串口和帧状态所有权 |

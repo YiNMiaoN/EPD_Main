@@ -119,6 +119,10 @@ int main()
     publish(json, API_REFRESH_FAILED);
     publish(json, API_REFRESH_SUCCEEDED, "current");
     publish(json, API_REFRESH_SUCCEEDED, "time");
+    publish("{\"api\":\"todolist\",\"valid\":true,\"stage\":\"today\",\"http_status\":200}",
+            API_REFRESH_SUCCEEDED, "todolist");
+    publish("{\"api\":\"todolist_inbox\",\"valid\":true,\"stage\":\"inbox_next2d\",\"items\":[]}",
+            API_REFRESH_SUCCEEDED, "todolist_inbox");
     publish(cache(""));
     assert(epd.displays == 1 && !logText.empty());
     EPD_UI_Refresh();

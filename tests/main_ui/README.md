@@ -28,6 +28,7 @@ Coverage:
   retains the closing bracket and keeps both rows within 400 pixels.
 - Successful hitokoto results repaint once; other APIs, failed results and
   invalid quote content do not repaint.
+- Successful todolist and todolist_inbox summaries do not repaint or replace the accepted quote.
 - Clearing the old quote region before drawing and waking the sleeping panel
   before display, then returning to sleep after automatic refresh.
 - Manual redraw retains the last accepted quote; a later shorter quote replaces it.

@@ -18,6 +18,9 @@ extern "C" {
     void EPD_HW_Clear(void);
     void EPD_HW_Sleep(void);
     void EPD_HW_Display();
+    // 刷新现有整屏缓冲中的矩形；不绘图、不自动初始化或休眠。
+    HAL_StatusTypeDef EPD_HW_DisplayPartial(uint16_t x, uint16_t y, uint16_t width, uint16_t height);
+    HAL_StatusTypeDef EPD_HW_PartialTest(void);
     void EPD_UI_Refresh(void);
     void EPD_UI_Poll(void);
 

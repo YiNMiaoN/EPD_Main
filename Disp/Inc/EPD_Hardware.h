@@ -36,6 +36,14 @@ void EPD_Init();
 void EPD_Clear();
 void EPD_Sleep();
 void EPD_Display(uint8_t *Image);
+// 最近一次硬件操作的结果；通信失败后须重新初始化并全刷。
+HAL_StatusTypeDef EPD_GetStatus(void);
+// 整屏缓冲固定为 400×300、每行 50 字节；x 和 width 必须为 8 的倍数。
+HAL_StatusTypeDef EPD_DisplayPartial(const uint8_t *Image, uint16_t x, uint16_t y,
+                                     uint16_t width, uint16_t height);
+// 紧密排列的局部图像；终点不包含在区域内，X 起止均须字节对齐。
+HAL_StatusTypeDef EPD_PartialDisplay(uint8_t *Image, uint32_t Xstart, uint32_t Ystart,
+                                    uint32_t Xend, uint32_t Yend);
 
 
 

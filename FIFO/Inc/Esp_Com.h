@@ -21,6 +21,8 @@ extern "C" {
 #define ESP_COM_API_MINUTELY5M      "minutely5m"
 #define ESP_COM_API_ALERT           "alert"
 #define ESP_COM_API_HITOKOTO        "hitokoto"
+#define ESP_COM_API_TODOLIST        "todolist"
+#define ESP_COM_API_TODOLIST_INBOX  "todolist_inbox"
 #define ESP_COM_API_RESPONSE        "response"
 #define ESP_COM_API_TIME            "time"
 
@@ -60,11 +62,12 @@ HAL_StatusTypeDef EspCom_Ping(void);
 HAL_StatusTypeDef EspCom_GetStatus(void);
 // Read ESP-local cache. Callers should check ESP_Ready before business requests.
 HAL_StatusTypeDef EspCom_GetCache(const char *api);
-// Queue HTTPS refresh (current/daily3d/minutely5m/alert/hitokoto).
+// Queue HTTPS refresh for weather, quote, todolist or todolist_inbox.
+// Todoist returns bounded task summaries; no automatic pagination.
 // ACK confirms queuing, not completion.
 // Wait for ESP_Ready to recover, then read response and the requested cache.
 HAL_StatusTypeDef EspCom_RefreshApi(const char *api);
-// Weather/quote: check local cache only. time: request live NTP, data in ACK.
+// Weather/quote/todolist: check local cache only. time: live NTP, data in ACK.
 HAL_StatusTypeDef EspCom_ReadApi(const char *api);
 
 bool EspCom_HasFrame(void);
