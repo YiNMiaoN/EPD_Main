@@ -7,6 +7,8 @@
 #include "Epd.h"
 #include "QWeather_Icon.h"
 #include "HitokotoText.h"
+#include "WeatherData.h"
+#include "LocalClock.h"
 
 class MainUI {
     public:
@@ -17,7 +19,10 @@ class MainUI {
         void updata_ui();
 
         void refresh();
+        HAL_StatusTypeDef refreshClock();
         bool setHitokotoCache(const char *json, std::size_t length);
+        WeatherUpdate setWeatherCache(const char *api, const char *json, std::size_t length);
+        bool setClockSnapshot(const LocalClock_Snapshot &snapshot);
 
     private:
         void drawTime();
@@ -46,6 +51,8 @@ class MainUI {
 
         EPD &epd;
         HitokotoText hitokoto;
+        WeatherData weather;
+        LocalClock_Snapshot clock{};
 };
 
 #endif //TOPINFO_MAINUI_H

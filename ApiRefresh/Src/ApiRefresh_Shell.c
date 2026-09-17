@@ -6,7 +6,7 @@ extern Shell shell;
 int api_refresh(int argc, char *argv[])
 {
     if (argc > 2) {
-        shellWriteString(&shell, "usage: api_refresh [current|daily3d|minutely5m|alert|hitokoto]\r\n");
+        shellWriteString(&shell, "usage: api_refresh [current|daily3d|minutely5m|alert|hitokoto|todolist|todolist_inbox]\r\n");
         return HAL_ERROR;
     }
     HAL_StatusTypeDef status = ApiRefresh_Start(argc == 2 ? argv[1] : NULL);

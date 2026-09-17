@@ -40,11 +40,19 @@ api_refresh daily3d
 api_refresh minutely5m
 api_refresh alert
 api_refresh hitokoto
+api_refresh todolist
+api_refresh todolist_inbox
 ```
 
 每个 API 完成或失败后，再触发下一个。无参数默认 `current`。`response` 是只读结果缓存，不能作为刷新目标；`daily7d`、空字符串和其他未支持名称返回 `HAL_ERROR (1)`。
 
-当前 MainUI 已接入一言：`api_refresh hitokoto` 成功后，应用层自动提取正文与作者并刷新一次屏幕，保留 `「正文」` 和 `——作者` 的两行格式；失败保留旧文。作者为空时显示出处。正文校验失败会在 Shell 提示 `hitokoto UI: invalid cache; previous text retained`，此时协议 state 仍可能是 succeeded。显示规则见 [项目 README](../README.md#一言刷新接入)。其他 API 暂不自动更新屏幕。
+`todolist` 获取所有项目的今日未完成任务摘要（`stage=today`）；`todolist_inbox` 获取 Inbox 今天和明天到期的未完成任务摘要（`stage=inbox_next2d`）。日期按 Todoist 账户时区解释，不是滚动 48 小时。两者复用 ACK → 等待 Ready → 查询 response → 查询对应缓存的流程，等待完成沿用 60 秒上限。
+
+STM32 校验通用控制字段，并要求有效的 Todoist response/cache 顶层 `stage` 与 API 对应；缺失、重复、类型错误、错视图或旧 `http_probe` 阶段均返回 `invalid_response`。ACK 不要求 stage。`ok=false` 时终止并保留完整失败 response，不读取旧成功缓存；成功保存最终摘要，成功 response 被替换。`api_result` 原样输出 JSON，尚未将 `items` 解析成任务结构或接入 MainUI，也不单独校验 `http_status/code` 等业务字段，业务成功仍依赖 ESP 的 `ok` 约定。
+
+`count` 是服务端本页条数，不等于全天总数，也不一定等于 `items` 长度；`has_more` 表示还有服务端页或 UART 摘要未装下全部条目。空列表是合法成功结果，后续 UI 应用它清除旧待办。任务 ID 和 due/tz 保持原样，`tz=null` 不能解释为 UTC。当前不自动分页、不周期请求、不刷新屏幕。
+
+当前 MainUI 已接入一言：`api_refresh hitokoto` 成功后，应用层自动提取正文与作者并刷新一次屏幕，保留 `「正文」` 和 `——作者` 的两行格式；失败保留旧文。作者为空时显示出处。正文校验失败会在 Shell 提示 `hitokoto UI: invalid cache; previous text retained`，此时协议 state 仍可能是 succeeded。显示规则见 [项目 README](../README.md#一言刷新接入)。天气四个 API 也已接入 MainUI，内容变化后按最短 5 秒显示间隔合并整屏刷新；时钟运行时保留局刷底图，否则休眠；详见 [天气数据接入](../Disp/WEATHER_README.md)。时间已接入上电校时和分钟局刷，见 [时钟接入](../Disp/CLOCK_README.md)；待办暂不自动更新屏幕。
 
 原 `esp_refresh` 仍是单次底层请求，不会启动本库。新流程执行期间，`esp_ping`、`esp_status`、`esp_cache`、`esp_refresh`、`esp_read`、修改就绪输出的 `esp_ready 0/1` 和阻塞绘屏的 `ref_epd` 返回 `HAL_BUSY (2)`。`api_result`、`esp_last`、`esp_apis` 和无参数 `esp_ready` 可继续使用。运行中再次 `api_refresh` 也返回 `HAL_BUSY`，不会覆盖当前任务。
 
@@ -52,17 +60,20 @@ api_refresh hitokoto
 
 本库也支持独立的手动 NTP 取时，使用同一请求槽和时间源。完整用法、结果字段与测试步骤见 [NTP 时间 API](TIME_README.md)。`api_time` / `ApiRefresh_StartTime()` 发送 READ_API time，成功 ACK 直接结束；不经过天气的 REFRESH/response/cache 流程，`api_refresh time` 不受理。
 
-库将每次 `ApiRefresh_Tick1ms()` 调用视作 1 ms。**TIM10 分频和计数值由用户在 CubeMX 配置，本次只接入中断计时，不修改这两个值。** 实际中断周期不是 1 ms 时，下面的超时和等待时间会按比例偏移。
+库读取 `SystemHeartbeat_Millis()` 的系统共享毫秒计数；TIM10 每次中断只调用一次 `SystemHeartbeat_Tick1ms()`。旧 `ApiRefresh_Tick1ms()` 是兼容转发入口，不得与系统 Tick 重复调用。**TIM10 分频和计数值由用户在 CubeMX 配置，本次只接入中断计时，不修改这两个值。** 实际中断周期不是 1 ms 时，下面的超时和等待时间会按比例偏移。
 
 当前 `main.c` 在 `EspCom_Init()`、显示和 Shell 初始化之后，默认模式下执行：
 
 ```c
+SystemHeartbeat_Init();
 ApiRefresh_Init();
+LocalClock_Init();
 __HAL_TIM_SET_COUNTER(&htim10, 0);
 __HAL_TIM_CLEAR_FLAG(&htim10, TIM_FLAG_UPDATE);
 if (HAL_TIM_Base_Start_IT(&htim10) != HAL_OK) {
     Error_Handler();
 }
+LocalClock_Start(); // 上电只启动一次 NTP 校时
 ```
 
 计数器归零和更新标志清理只用于启动，不改变 PSC/ARR 配置。`MX_TIM10_Init()` 仍由 CubeMX 生成。中断链路为：
@@ -71,10 +82,10 @@ if (HAL_TIM_Base_Start_IT(&htim10) != HAL_OK) {
 TIM1_UP_TIM10_IRQHandler
   -> HAL_TIM_IRQHandler(&htim10)
   -> HAL_TIM_PeriodElapsedCallback
-  -> ApiRefresh_Tick1ms
+  -> SystemHeartbeat_Tick1ms
 ```
 
-`tim.c` 现有回调的 TIM10 分支中仅调用 `ApiRefresh_Tick1ms()`，库内部只增加 `volatile uint32_t` 毫秒计数。中断内不发 UART、不解析 JSON、不打印、不调用 `HAL_Delay()`。不要额外定义第二个 HAL 定时器回调。
+`tim.c` 现有回调的 TIM10 分支中仅调用 `SystemHeartbeat_Tick1ms()`，只增加一个 `volatile uint32_t` 系统毫秒计数，API 超时、本地时钟和其他任务共享。中断内不发 UART、不解析 JSON、不打印、不调用 `HAL_Delay()`。不要额外定义第二个 HAL 定时器回调。
 
 默认主循环按以下顺序持续执行：
 
@@ -93,9 +104,9 @@ shellTask(&shell);
 
 | 接口 | 参数与结果 |
 | --- | --- |
-| `void ApiRefresh_Init(void)` | 在 `EspCom_Init()` 后、TIM10 启动前调用一次；清空状态和时间，安装唯一帧观察回调。运行中重调会丢弃当前流程与结果，不作为取消接口使用 |
-| `void ApiRefresh_Tick1ms(void)` | 每 1 ms 从 TIM10 回调调用一次，仅更新时间源 |
-| `HAL_StatusTypeDef ApiRefresh_Start(const char *api)` | `NULL` 默认 current；白名单为上述五类。HAL_OK 仅表示本地受理，HAL_BUSY 表示已有流程，HAL_ERROR 表示未初始化或非法名称。拒绝请求不改变现有结果，合法名称复制到内部缓冲 |
+| `void ApiRefresh_Init(void)` | 在 `EspCom_Init()` 后、TIM10 启动前调用一次；清空请求状态但不重置共享心跳，安装唯一帧观察回调。运行中重调会丢弃当前流程与结果，不作为取消接口使用 |
+| `void ApiRefresh_Tick1ms(void)` | 兼容转发到系统心跳；当前 TIM10 已直接调用系统入口，禁止重复 Tick |
+| `HAL_StatusTypeDef ApiRefresh_Start(const char *api)` | `NULL` 默认 current；白名单为上述七类（含两种 Todoist 摘要）。HAL_OK 仅表示本地受理，HAL_BUSY 表示已有流程，HAL_ERROR 表示未初始化或非法名称。拒绝请求不改变现有结果，合法名称复制到内部缓冲 |
 | `HAL_StatusTypeDef ApiRefresh_StartTime(void)` | 手动发起实时 NTP 取时，复用忙碌检查；HAL_OK 本地受理，HAL_BUSY 已有请求，HAL_ERROR 未初始化 |
 | `void ApiRefresh_Poll(void)` | 紧接 `EspCom_Poll()` 调用，处理匹配帧、Ready 和超时；没有网络阻塞等待，但底层 UART 发送仍调用阻塞 HAL 接口，最长超时参数为 1000 ms |
 | `bool ApiRefresh_IsBusy(void)` | 仅等待阶段返回 true；idle/succeeded/failed 返回 false |
@@ -136,7 +147,7 @@ shellTask(&shell);
 
 每次发出请求后记录底层分配的 8 位 SEQ，忽略不匹配的帧；匹配 SEQ 但类型或控制字段错误会失败。接收观察回调在 `EspCom_Poll()` 内逐帧执行，因此同一次 Poll 中其他帧覆盖 `esp_last`，或 `esp_last` 清除最近帧标志，都不会删除本库已复制的响应。
 
-JSON 先通过 coreJSON 语法校验，再仅遍历顶层字段；api 必须是匹配的字符串，ok/valid/refresh 在相关阶段必须是布尔值。重复控制字段、错误类型、嵌套伪造控制字段不能通过校验。控制字段名与 API 名称按 ESP 当前使用的未转义 ASCII 文本匹配；库中业务文本、未知字段和 UTF-8 内容原样保留。MainUI 的一言文本转换位于 Disp/HitokotoText 模块，由应用层在流程成功后调用。
+JSON 先通过 coreJSON 语法校验，再仅遍历顶层字段；api 必须是匹配的字符串，ok/valid/refresh 在相关阶段必须是布尔值。重复控制字段、错误类型、嵌套伪造控制字段不能通过校验。控制字段名与 API 名称按 ESP 当前使用的未转义 ASCII 文本匹配；库中业务文本、未知字段和 UTF-8 内容原样保留。MainUI 的天气业务校验位于 Disp/WeatherData 模块，一言文本转换位于 Disp/HitokotoText 模块，共用 JsonText 字符串解码，由应用层在流程成功后调用。
 
 不要求一定观测到 Ready 的 LOW 边沿，以允许 HTTP 很快完成的情况；ACK 后的 100 ms 是查询前等待，并非网络请求成功的证明。本流程依赖 ESP 遵守“刷新期间 LOW、完成后 HIGH”的约定。response 未包含可与 REFRESH 请求绑定的事务 ID，8 位 SEQ 也会回绕，因此无法完全排除跨回绕的迟到响应或 ESP 错误提供的同 API 旧结果；100 ms 等待不能代替协议级事务标识。
 
@@ -175,4 +186,4 @@ JSON 先通过 coreJSON 语法校验，再仅遍历顶层字段；api 必须是�
 - `succeeded` 说明按当前协议取得有效缓存封装，不保证业务内容完整、观测时间最新或屏幕已更新。应用层的 EPD_UI_Poll 已接入一言解析和绘屏；其他数据模型与缓存持久化仍待接入。
 - 底层 FIFO、UART 错误恢复、384 字节上限等限制仍在，详见通信文档。
 
-主机测试编译真实 EspCom、ApiRefresh、coreJSON 和 Shell 命令，使用模拟 UART/GPIO 与人工 Tick；覆盖五类成功流程、SEQ 匹配、帧覆盖与消费、JSON 异常、ESP/刷新失败、各阶段超时和手动命令互斥。运行方法见 [测试说明](../tests/esp_com/README.md)。已完成 Debug 固件构建，尚未验证真实 TIM10 周期、UART 电气与 ESP HTTPS 时序。
+主机测试编译真实 EspCom、ApiRefresh、coreJSON 和 Shell 命令，使用模拟 UART/GPIO 与人工 Tick；覆盖七类成功流程（含两种 Todoist 摘要）、SEQ 匹配、帧覆盖与消费、JSON 异常、ESP/刷新失败、各阶段超时和手动命令互斥。运行方法见 [测试说明](../tests/esp_com/README.md)。已完成 Debug 固件构建，尚未验证真实 TIM10 周期、UART 电气与 ESP HTTPS 时序。

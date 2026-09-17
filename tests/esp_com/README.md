@@ -6,7 +6,7 @@ Esp_Com.c, ApiRefresh.c, coreJSON and both Shell command modules are compiled
 without including the STM32 HAL.
 
 ```powershell
-gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c ApiRefresh/Src/ApiRefresh.c ApiRefresh/Src/ApiTime.c ApiRefresh/Src/ApiRefresh_Shell.c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_esp_com.exe
+gcc -std=c11 -Wall -Wextra -Werror -Itests/esp_com/stubs -ICore/Inc -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/esp_com/test_esp_com.c FIFO/Src/Esp_Com.c LetterSh/Src/user_cmd.c Core/Src/SystemHeartbeat.c ApiRefresh/Src/ApiRefresh.c ApiRefresh/Src/ApiTime.c ApiRefresh/Src/ApiRefresh_Shell.c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_esp_com.exe
 ./cmake-build-debug/test_esp_com.exe
 ```
 
@@ -29,7 +29,7 @@ and source text, an escaped quote, string/null authors, unavailable cache and
 failed-refresh payloads. These verify unchanged transport and console output;
 the firmware does not yet parse JSON into display data.
 
-Refresh workflow tests use manually advanced TIM10 ticks and cover all five
+Refresh workflow tests use manually advanced TIM10 ticks and cover all seven
 APIs, idle/completed inactivity (no periodic refresh), no sends from Tick,
 Ready transitions, ACK settling, sequence matching, response/cache validation,
 UTF-8 preservation, malformed/duplicate/nested/wrong-type JSON fields, ESP
@@ -48,3 +48,12 @@ previous time on a new request, parsed Shell output and no automatic polling.
 Parser tests cover missing/duplicate/nested fields, integer types and overflow,
 signed timezone offsets, valid leap day, invalid dates/times and weekday range.
 They do not contact an NTP server or establish that the returned clock is correct.
+
+Todoist tests cover both today and Inbox summaries: raw refresh/cache/read framing,
+ready-low suppression, shared request exclusion, ACK/Ready/response/cache flow,
+empty lists and partial UTF-8 task summaries with count greater than items length.
+Stage validation rejects missing, duplicate, nested, wrong-type, old http_probe and
+cross-view stages in both result and cache frames. Failures retain diagnostic JSON
+and never read old cache, including HTTP 200 with body/JSON/cache failures.
+The observed empty response is kept as a regression case without automatic retry.
+No tests contact Todoist or validate task fields into a display model.

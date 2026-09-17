@@ -1,4 +1,5 @@
 #include "ApiRefresh.h"
+#include "SystemHeartbeat.h"
 #include "core_json.h"
 #include <string.h>
 
@@ -8,15 +9,15 @@ static bool pending;
 static uint8_t expected_seq;
 static uint32_t stage_tick;
 static uint32_t received_tick;
-static volatile uint32_t timer_ms;
 
 void ApiRefresh_Tick1ms(void)
 {
-    ++timer_ms;
+    SystemHeartbeat_Tick1ms();
 }
 
 typedef struct {
     bool api_matches;
+    bool stage_matches;
     JSONTypes_t ok;
     JSONTypes_t valid;
     JSONTypes_t refresh;
@@ -59,7 +60,7 @@ static void observe_frame(const EspCom_Frame *frame)
         frame->seq == expected_seq && !pending) {
         result.frame = *frame;
         result.has_frame = true;
-        received_tick = timer_ms;
+        received_tick = SystemHeartbeat_Millis();
         pending = true;
     }
 }
@@ -68,7 +69,6 @@ void ApiRefresh_Init(void)
 {
     memset(&result, 0, sizeof(result));
     pending = false;
-    timer_ms = 0;
     initialized = true;
     EspCom_SetFrameObserver(observe_frame);
 }
@@ -80,7 +80,7 @@ static HAL_StatusTypeDef queue_request(const char *api)
     memset(&result, 0, sizeof(result));
     strcpy(result.api, api);
     result.state = API_REFRESH_WAIT_READY;
-    stage_tick = timer_ms;
+    stage_tick = SystemHeartbeat_Millis();
     pending = false;
     return HAL_OK;
 }
@@ -94,7 +94,8 @@ HAL_StatusTypeDef ApiRefresh_Start(const char *api)
 {
     static const char *const supported[] = {
         ESP_COM_API_CURRENT, ESP_COM_API_DAILY3D, ESP_COM_API_MINUTELY5M,
-        ESP_COM_API_ALERT, ESP_COM_API_HITOKOTO
+        ESP_COM_API_ALERT, ESP_COM_API_HITOKOTO, ESP_COM_API_TODOLIST,
+        ESP_COM_API_TODOLIST_INBOX
     };
     if (!initialized) {
         return HAL_ERROR;
@@ -129,6 +130,13 @@ static bool boolean_type(JSONTypes_t type)
     return type == JSONTrue || type == JSONFalse;
 }
 
+static const char *todo_stage(void)
+{
+    if (strcmp(result.api, ESP_COM_API_TODOLIST) == 0) return "today";
+    if (strcmp(result.api, ESP_COM_API_TODOLIST_INBOX) == 0) return "inbox_next2d";
+    return NULL;
+}
+
 static bool parse_fields(ResponseFields *fields)
 {
     const char *json = (const char *)result.frame.payload;
@@ -140,6 +148,7 @@ static bool parse_fields(ResponseFields *fields)
     unsigned seen = 0;
     JSONPair_t pair;
     JSONStatus_t status;
+    const char *expected_stage = todo_stage();
     memset(fields, 0, sizeof(*fields));
     // Iterate only top-level pairs so nested business fields cannot pass checks.
     while ((status = JSON_Iterate(json, length, &start, &next, &pair)) == JSONSuccess) {
@@ -164,6 +173,11 @@ static bool parse_fields(ResponseFields *fields)
             bit = 8U;
             if (!boolean_type(pair.jsonType)) return false;
             fields->refresh = pair.jsonType;
+        } else if (expected_stage != NULL && key_is(&pair, "stage")) {
+            bit = 16U;
+            if (pair.jsonType != JSONString) return false;
+            fields->stage_matches = pair.valueLength == strlen(expected_stage) &&
+                                    memcmp(pair.value, expected_stage, pair.valueLength) == 0;
         }
         if ((seen & bit) != 0U) return false;
         seen |= bit;
@@ -204,7 +218,7 @@ static void handle_response(void)
             fail(API_REFRESH_ERROR_REJECTED);
         } else {
             result.state = API_REFRESH_WAIT_FINISH;
-            stage_tick = timer_ms;
+            stage_tick = SystemHeartbeat_Millis();
         }
         return;
     }
@@ -212,6 +226,9 @@ static void handle_response(void)
         fail(API_REFRESH_ERROR_PROTOCOL);
     } else if (fields.valid != JSONTrue) {
         fail(API_REFRESH_ERROR_INVALID_CACHE);
+    } else if (todo_stage() != NULL && !fields.stage_matches) {
+        // ACK has no stage. Valid result/cache frames must identify the new schema.
+        fail(API_REFRESH_ERROR_PROTOCOL);
     } else if (result.state == API_REFRESH_WAIT_RESULT) {
         if (!boolean_type(fields.ok)) {
             fail(API_REFRESH_ERROR_PROTOCOL);
@@ -219,7 +236,7 @@ static void handle_response(void)
             fail(API_REFRESH_ERROR_REMOTE_REFRESH);
         } else {
             result.state = API_REFRESH_WAIT_CACHE_READY;
-            stage_tick = timer_ms;
+            stage_tick = SystemHeartbeat_Millis();
         }
     } else {
         result.state = API_REFRESH_SUCCEEDED;
@@ -237,13 +254,13 @@ static void send_request(uint8_t command, const char *api, ApiRefresh_State wait
     }
     expected_seq = EspCom_GetTxSequence();
     result.state = waiting;
-    stage_tick = timer_ms;
+    stage_tick = SystemHeartbeat_Millis();
 }
 
 void ApiRefresh_Poll(void)
 {
     if (!ApiRefresh_IsBusy()) return;
-    uint32_t now = timer_ms;
+    uint32_t now = SystemHeartbeat_Millis();
     // A frame parsed before its deadline can be handled on the next loop pass.
     uint32_t elapsed = (pending ? received_tick : now) - stage_tick;
     if (elapsed >= stage_timeout()) {

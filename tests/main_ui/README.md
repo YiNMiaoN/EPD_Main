@@ -1,14 +1,12 @@
-# MainUI Hitokoto Host Tests
+# MainUI Clock, Hitokoto and Weather Host Tests
 
 Run from the repository root with native GCC/G++, not the Arm cross compiler.
-The test compiles the real `HitokotoText.cpp`, `MainUI.cpp`, `Epd_Api.cpp` and
-coreJSON. A forced-include stub substitutes display/Flash hardware and records
+The tests compile the real clock, shared heartbeat, text/weather parsers,
+MainUI, C bridge and coreJSON. A forced-include stub substitutes display/Flash hardware and records
 draw calls; the refresh result is supplied by the test.
 
 ```powershell
-gcc -std=c11 -Wall -Wextra -Werror -IApiRefresh/ThirdParty/coreJSON -c ApiRefresh/ThirdParty/coreJSON/core_json.c -o cmake-build-debug/test_core_json.o
-g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -include tests/main_ui/stubs/display.h -Itests/esp_com/stubs -ICore/Inc -IDisp/Inc -IQWeather/Inc -IFIFO/Inc -IApiRefresh/Inc -IApiRefresh/ThirdParty/coreJSON tests/main_ui/test_hitokoto.cpp Disp/Src/HitokotoText.cpp Disp/Src/MainUI.cpp Core/Src/Epd_Api.cpp cmake-build-debug/test_core_json.o -o cmake-build-debug/test_hitokoto.exe
-./cmake-build-debug/test_hitokoto.exe
+./tests/main_ui/run.ps1
 ```
 
 Use an existing `cmake-build-debug` directory, and put the native compiler's
@@ -26,13 +24,18 @@ Coverage:
   attributions, including the fallback source. The start is 400 minus text width.
 - Opening/closing quote brackets and two em dashes; truncation by glyph width
   retains the closing bracket and keeps both rows within 400 pixels.
-- Successful hitokoto results repaint once; other APIs, failed results and
+- Successful hitokoto results repaint once; unrelated APIs, failed results and
   invalid quote content do not repaint.
+- Successful todolist and todolist_inbox summaries do not repaint or replace the accepted quote.
 - Clearing the old quote region before drawing and waking the sleeping panel
-  before display, then returning to sleep after automatic refresh.
+  before display; without a synchronized clock, automatic refresh returns to sleep.
 - Manual redraw retains the last accepted quote; a later shorter quote replaces it.
+
+Weather coverage: the four compact schemas, independent snapshots, duplicate/type/range/date/UTF-8 checks, exact 24-point rainfall and total consistency, first-warning selection and clearing, unchanged layout, precipitation total to the right of 2h, 18 adjoining bars for the first 90 minutes, short descriptions limited to nine characters (dry, continuous, starting, stopping and intermittent rain), two-hour totals and descriptions including rain beyond the visible range, and zero-rain clearing, missing-icon fallback, five-second pacing, request-busy suppression, merged results, manual redraw, display failure without retry loops, and tick wraparound.
 
 These are parsing, layout-call and application integration tests. They do not
 render the external Flash glyphs, validate electrical timing, simulate the
 panel BUSY pin, or prove the ESP HTTPS request succeeds. Run the independent
 [ESP workflow tests](../esp_com/README.md) as well.
+
+Clock coverage: startup requests once, failure without retry, positive/negative UTC offsets, ACK calendar consistency, midnight/month/year/leap-day/weekday transitions, 2100 non-leap year, Unix 32-bit boundary, delayed polling with subsecond remainder, millisecond wraparound, placeholders, unchanged font sizes, full-width date fitting, minute-only partial window (248,0,152,40), busy-request deferral, 30 partials followed by a maintenance full refresh, sleep invalidation and partial-transfer failure recovery. The pure clock test injects time jumps; the UI test uses the production SystemHeartbeat counter. These tests do not measure actual TIM10 clock accuracy or physical partial-refresh ghosting.

@@ -1,5 +1,6 @@
 #include "Esp_Com.h"
 #include "ApiRefresh.h"
+#include "SystemHeartbeat.h"
 #include "gpio.h"
 #include "shell.h"
 #include <assert.h>
@@ -188,7 +189,7 @@ static void test_api_refresh(void)
     assert(ApiRefresh_Start("daily7d") == HAL_ERROR);
     assert(ApiRefresh_Start("") == HAL_ERROR);
 
-    const char *apis[] = {"current", "daily3d", "minutely5m", "alert", "hitokoto"};
+    const char *apis[] = {"current", "daily3d", "minutely5m", "alert", "hitokoto", ESP_COM_API_TODOLIST, ESP_COM_API_TODOLIST_INBOX};
     for (unsigned i = 0; i < sizeof(apis) / sizeof(apis[0]); ++i) {
         ApiRefresh_Init();
         ready = GPIO_PIN_RESET;
@@ -200,6 +201,7 @@ static void test_api_refresh(void)
         assert(strcmp(ApiRefresh_GetResult()->api, apis[i]) == 0);
         ready = GPIO_PIN_SET;
         ApiRefresh_Poll();
+        const char *stage = strcmp(apis[i], ESP_COM_API_TODOLIST_INBOX) == 0 ? "inbox_next2d" : "today";
         char json[384], request[40];
         snprintf(request, sizeof(request), "{\"api\":\"%s\"}", apis[i]);
         expect_request(ESP_COM_CMD_REFRESH_API, request);
@@ -227,12 +229,12 @@ static void test_api_refresh(void)
         ready = GPIO_PIN_SET;
         ApiRefresh_Poll();
         expect_request(ESP_COM_CMD_GET_CACHE, "{\"api\":\"response\"}");
-        snprintf(json, sizeof(json), "{\"api\":\"%s\",\"valid\":true,\"ok\":true,\"uptime_ms\":123}", apis[i]);
+        snprintf(json, sizeof(json), "{\"api\":\"%s\",\"valid\":true,\"ok\":true,\"stage\":\"%s\",\"uptime_ms\":123}", apis[i], stage);
         reply(ESP_COM_RSP_CACHE, json);
         assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_CACHE_READY);
         ApiRefresh_Poll();
         expect_request(ESP_COM_CMD_GET_CACHE, request);
-        snprintf(json, sizeof(json), "{\"api\":\"%s\",\"valid\":true,\"text\":\"\xE4\xBD\xA0\xE5\xA5\xBD\",\"from_who\":null}", apis[i]);
+        snprintf(json, sizeof(json), "{\"api\":\"%s\",\"valid\":true,\"text\":\"\xE4\xBD\xA0\xE5\xA5\xBD\",\"from_who\":null,\"stage\":\"%s\"}", apis[i], stage);
         reply(ESP_COM_RSP_CACHE, json);
         const ApiRefresh_Result *r = ApiRefresh_GetResult();
         assert(r->state == API_REFRESH_SUCCEEDED && r->error == API_REFRESH_ERROR_NONE);
@@ -342,6 +344,119 @@ static void test_api_refresh(void)
 }
 
 static const char time_ack[] = "{\"ok\":true,\"api\":\"time\",\"refresh\":false,\"realtime\":true,\"unix_time\":1799798400,\"utc_offset\":28800,\"date\":\"2027-01-13\",\"time\":\"08:00:00\",\"weekday\":3}";
+
+static void begin_todolist_result(const char *api)
+{
+    ApiRefresh_Init();
+    ready = GPIO_PIN_SET;
+    tx_status = HAL_OK;
+    char *args[] = {"api_refresh", (char *)api};
+    output_len = 0;
+    assert(api_refresh(2, args) == HAL_OK);
+    ApiRefresh_Poll();
+    char request[40], ack[96];
+    snprintf(request, sizeof(request), "{\"api\":\"%s\"}", api);
+    expect_request(ESP_COM_CMD_REFRESH_API, request);
+    assert(ApiRefresh_StartTime() == HAL_BUSY);
+    assert(ApiRefresh_Start(ESP_COM_API_TODOLIST) == HAL_BUSY);
+    assert(ApiRefresh_Start(ESP_COM_API_TODOLIST_INBOX) == HAL_BUSY);
+    assert(esp_refresh(2, args) == HAL_BUSY);
+    assert(ref_epd(1, args) == HAL_BUSY);
+    snprintf(ack, sizeof(ack), "{\"ok\":true,\"api\":\"%s\",\"refresh\":true}", api);
+    reply(ESP_COM_RSP_ACK, ack);
+    assert(ApiRefresh_GetResult()->state == API_REFRESH_WAIT_FINISH);
+    ready = GPIO_PIN_RESET;
+    unsigned before = sends;
+    tick(API_REFRESH_SETTLE_MS);
+    ApiRefresh_Poll();
+    assert(sends == before);
+    ready = GPIO_PIN_SET;
+    ApiRefresh_Poll();
+    expect_request(ESP_COM_CMD_GET_CACHE, "{\"api\":\"response\"}");
+}
+
+static void test_todolist(const char *api, const char *stage)
+{
+    char success[256], cache[384], request[40];
+    snprintf(success, sizeof(success), "{\"api\":\"%s\",\"valid\":true,\"ok\":true,\"stage\":\"%s\",\"http_status\":200,\"code\":\"json_ok\"}", api, stage);
+    snprintf(request, sizeof(request), "{\"api\":\"%s\"}", api);
+    const char *summaries[] = {
+        "\"count\":0,\"has_more\":false,\"items\":[]",
+        u8"\"count\":2,\"has_more\":true,\"items\":[{\"id\":\"abc123\",\"due\":\"2026-09-17\",\"tz\":null,\"content\":\"检查设备\",\"title_cut\":true}]"
+    };
+    for (unsigned i = 0; i < sizeof(summaries) / sizeof(summaries[0]); ++i) {
+        begin_todolist_result(api);
+        reply(ESP_COM_RSP_CACHE, success);
+        ApiRefresh_Poll();
+        expect_request(ESP_COM_CMD_GET_CACHE, request);
+        int len = snprintf(cache, sizeof(cache), "{\"api\":\"%s\",\"valid\":true,\"stage\":\"%s\",\"http_status\":200,\"checked_at_ms\":123456,%s}", api, stage, summaries[i]);
+        assert(len > 0 && len < (int)sizeof(cache));
+        reply(ESP_COM_RSP_CACHE, cache);
+        assert(ApiRefresh_GetResult()->state == API_REFRESH_SUCCEEDED);
+        assert(!ApiRefresh_GetResult()->has_time);
+        output_len = 0;
+        assert(api_result(0, NULL) == 0 && strstr(output, cache));
+        unsigned before = sends;
+        tick(API_REFRESH_FETCH_TIMEOUT_MS);
+        ApiRefresh_Poll();
+        assert(sends == before); // No periodic refresh or pagination.
+    }
+    const struct { const char *code; int status; int transport; } failures[] = {
+        {"not_configured", 0, 0}, {"ntp_failed", 0, 0},
+        {"tls_or_transport_error", 0, -1}, {"http_error", 401, 0},
+        {"http_error", 429, 0}, {"out_of_memory", 200, 0},
+        {"cache_rejected", 200, 0}, {"body_too_large", 200, 0},
+        {"body_read_failed", 200, 0}, {"bad_json", 200, 0}
+    };
+    for (unsigned i = 0; i < sizeof(failures) / sizeof(failures[0]); ++i) {
+        begin_todolist_result(api);
+        char json[384];
+        int len = snprintf(json, sizeof(json),
+            "{\"api\":\"%s\",\"valid\":true,\"ok\":false,\"stage\":\"%s\",\"http_status\":%d,\"transport_error\":%d,\"code\":\"%s\"}",
+            api, stage, failures[i].status, failures[i].transport, failures[i].code);
+        assert(len > 0 && len < (int)sizeof(json));
+        unsigned before = sends;
+        reply(ESP_COM_RSP_CACHE, json);
+        expect_failure(API_REFRESH_ERROR_REMOTE_REFRESH, API_REFRESH_WAIT_RESULT);
+        assert(sends == before); // Never read old cache after failure, even HTTP 200.
+        output_len = 0;
+        assert(api_result(0, NULL) == 0 && strstr(output, json));
+    }
+    // Reject old probe schema, missing/nested/duplicate/wrong-type and cross-view stages.
+    const char *bad_stages[] = {
+        "", ",\"stage\":\"http_probe\"", ",\"stage\":false",
+        ",\"nested\":{\"stage\":\"today\"}",
+        ",\"stage\":\"today\",\"stage\":\"inbox_next2d\"",
+        ",\"stage\":\"today\"", ",\"stage\":\"inbox_next2d\""
+    };
+    for (unsigned i = 0; i < sizeof(bad_stages) / sizeof(bad_stages[0]); ++i) {
+        if ((i == 5 && strcmp(stage, "today") == 0) ||
+            (i == 6 && strcmp(stage, "inbox_next2d") == 0)) continue;
+        for (unsigned final_cache = 0; final_cache < 2; ++final_cache) {
+            begin_todolist_result(api);
+            if (final_cache) {
+                reply(ESP_COM_RSP_CACHE, success);
+                ApiRefresh_Poll();
+            }
+            char json[256];
+            snprintf(json, sizeof(json), "{\"api\":\"%s\",\"valid\":true,\"ok\":true%s}", api, bad_stages[i]);
+            reply(ESP_COM_RSP_CACHE, json);
+            expect_failure(API_REFRESH_ERROR_PROTOCOL, final_cache ? API_REFRESH_WAIT_CACHE : API_REFRESH_WAIT_RESULT);
+            assert(strcmp((const char *)ApiRefresh_GetResult()->frame.payload, json) == 0);
+        }
+    }
+    begin_todolist_result(api);
+    reply(ESP_COM_RSP_CACHE, success);
+    ApiRefresh_Poll();
+    snprintf(cache, sizeof(cache), "{\"api\":\"%s\",\"valid\":false}", api);
+    reply(ESP_COM_RSP_CACHE, cache);
+    expect_failure(API_REFRESH_ERROR_INVALID_CACHE, API_REFRESH_WAIT_CACHE);
+    // Preserve the observed empty response behavior; no speculative retry.
+    begin_todolist_result(api);
+    reply(ESP_COM_RSP_CACHE, "{\"api\":\"response\",\"valid\":false,\"message\":\"cache not available\"}");
+    expect_failure(API_REFRESH_ERROR_PROTOCOL, API_REFRESH_WAIT_RESULT);
+    printf("Todoist summary workflow passed: %s\n", api);
+}
 
 static void begin_time(void)
 {
@@ -508,7 +623,7 @@ int main(void)
     assert(esp_read(2, rain) == HAL_OK);
     expect_request(ESP_COM_CMD_READ_API, "{\"api\":\"minutely5m\"}");
 
-    char *new_apis[] = { ESP_COM_API_DAILY3D, ESP_COM_API_ALERT, ESP_COM_API_HITOKOTO };
+    char *new_apis[] = { ESP_COM_API_DAILY3D, ESP_COM_API_ALERT, ESP_COM_API_HITOKOTO, ESP_COM_API_TODOLIST, ESP_COM_API_TODOLIST_INBOX };
     for (unsigned i = 0; i < sizeof(new_apis) / sizeof(new_apis[0]); ++i) {
         char *args[] = { "command", new_apis[i] };
         char json[40];
@@ -601,9 +716,17 @@ int main(void)
     assert(strstr(output, "daily3d: three-day forecast"));
     assert(strstr(output, "alert: refresh + warning summary"));
     assert(strstr(output, "hitokoto: refresh + quote"));
+    assert(strstr(output, "todolist: today's tasks"));
     assert(strstr(output, "daily7d: removed"));
     puts("ESP communication and Shell tests passed");
     test_api_refresh();
+    test_todolist(ESP_COM_API_TODOLIST, "today");
+    test_todolist(ESP_COM_API_TODOLIST_INBOX, "inbox_next2d");
     test_api_time();
+    // 重新初始化通信库不能重置其他任务共用的系统心跳。
+    uint32_t shared_before = SystemHeartbeat_Millis();
+    SystemHeartbeat_Tick1ms();
+    ApiRefresh_Init();
+    assert(SystemHeartbeat_Millis() == shared_before + 1U);
     return 0;
 }

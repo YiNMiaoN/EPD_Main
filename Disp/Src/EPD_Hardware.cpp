@@ -5,15 +5,52 @@
 #include "EPD_Hardware.h"
 #include "spi.h"
 
+static HAL_StatusTypeDef epdStatus = HAL_OK;
+static bool epdInitialized = false;
+static bool epdBaseReady = false;
+static constexpr uint32_t EPD_BUSY_TIMEOUT_MS = 15000;
+
+// HINK-E042A13-A0 社区参考驱动的 70 字节黑白局刷 LUT：
+// https://github.com/ZinggJM/GxEPD2/discussions/107 （附件 drive.zip）
+// BB、WW 不施加转换脉冲；BW、WB 分别执行黑转白和白转黑。
+static constexpr uint8_t EPD_PARTIAL_LUT[] = {
+    0x00, 0, 0, 0, 0, 0, 0,
+    0x82, 0, 0, 0, 0, 0, 0,
+    0x50, 0, 0, 0, 0, 0, 0,
+    0x00, 0, 0, 0, 0, 0, 0,
+    0x00, 0, 0, 0, 0, 0, 0,
+    0x08, 0x08, 0x00, 0x08, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x01,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0
+};
+static_assert(sizeof(EPD_PARTIAL_LUT) == 70, "SSD1619A LUT must contain 70 bytes");
+
+HAL_StatusTypeDef EPD_GetStatus(void) { return epdStatus; }
+bool EPD_CanRefreshPartial(void) { return epdInitialized && epdBaseReady && epdStatus == HAL_OK; }
+
+static void EPD_RecordError(HAL_StatusTypeDef status)
+{
+    if (status != HAL_OK) {
+        epdStatus = status;
+        epdInitialized = false;
+        epdBaseReady = false;
+    }
+}
 
 void DEV_SPI_WriteByte(uint8_t value)
 {
-    HAL_SPI_Transmit(&hspi1, &value, 1, 1000);
+    if (epdStatus == HAL_OK)
+        EPD_RecordError(HAL_SPI_Transmit(&hspi1, &value, 1, 1000));
 }
 
 void DEV_SPI_Write_nByte(uint8_t *value, uint8_t len)
 {
-    HAL_SPI_Transmit(&hspi1, value, len, 1000);
+    if (epdStatus == HAL_OK)
+        EPD_RecordError(HAL_SPI_Transmit(&hspi1, value, len, 1000));
 }
 
 /******************************************************************************
@@ -22,6 +59,9 @@ parameter:
 ******************************************************************************/
 static void EPD_Reset(void)
 {
+    epdStatus = HAL_OK;
+    epdInitialized = false;
+    epdBaseReady = false;
     DEV_Digital_Write(EPD_RST_PIN, 1);
     HAL_Delay(100);
     DEV_Digital_Write(EPD_RST_PIN, 0);
@@ -35,7 +75,13 @@ function :	Wait until the busy_pin goes LOW
 parameter:
 ******************************************************************************/
 void EPD_ReadBusy(void) {
+    if (epdStatus != HAL_OK) return;
+    const uint32_t start = HAL_GetTick();
     while(DEV_Digital_Read(EPD_BUSY_PIN) == GPIO_PIN_SET) {
+        if (static_cast<uint32_t>(HAL_GetTick() - start) >= EPD_BUSY_TIMEOUT_MS) {
+            EPD_RecordError(HAL_TIMEOUT);
+            return;
+        }
         //LOW: idle, HIGH: busy
         HAL_Delay(10);
     }
@@ -49,6 +95,7 @@ parameter:
 ******************************************************************************/
 static void EPD_SendCommand(uint8_t Reg)
 {
+    if (epdStatus != HAL_OK) return;
     DEV_Digital_Write(EPD_DC_PIN, 0);
     DEV_Digital_Write(EPD_CS_PIN, 0);
     DEV_SPI_WriteByte(Reg);
@@ -62,6 +109,7 @@ parameter:
 ******************************************************************************/
 static void EPD_SendData(uint8_t Data)
 {
+    if (epdStatus != HAL_OK) return;
     DEV_Digital_Write(EPD_DC_PIN, 1);
     DEV_Digital_Write(EPD_CS_PIN, 0);
     DEV_SPI_WriteByte(Data);
@@ -113,11 +161,13 @@ static void EPD_TurnOnDisplay(void)
 static void EPD_TurnOnDisplay_Partial(void)
 {
     EPD_SendCommand(0x22);
-    EPD_SendData(0xFF);
+    // 执行已写入的 LUT，不再从 OTP 加载另一套波形覆盖它。
+    EPD_SendData(0xC7);
     EPD_SendCommand(0x20);
     EPD_ReadBusy();
 }
 
+#if EPD_Fast_Mode
 static void EPD_TurnOnDisplay_Fast(void)
 {
     EPD_SendCommand(0x22);
@@ -125,6 +175,7 @@ static void EPD_TurnOnDisplay_Fast(void)
     EPD_SendCommand(0x20);
     EPD_ReadBusy();
 }
+#endif
 
 int DEV_Module_Init(void)
 {
@@ -194,6 +245,7 @@ void EPD_Init(void)
     EPD_SendData(0x00);
 
     EPD_ReadBusy();
+    epdInitialized = (epdStatus == HAL_OK);
 
 }
 
@@ -232,9 +284,32 @@ void EPD_Init(void) {
     EPD_SetCursor(0, 0);
 
     EPD_ReadBusy();
+    epdInitialized = (epdStatus == HAL_OK);
 }
 
 #endif
+
+// 局刷结束后，整屏操作必须恢复控制寄存器和完整窗口。
+static bool EPD_PrepareFull(void)
+{
+    if (epdStatus != HAL_OK) return false;
+    if (!epdInitialized) {
+        EPD_RecordError(HAL_ERROR);
+        return false;
+    }
+    epdBaseReady = false;
+    EPD_ReadBusy();
+    EPD_SendCommand(0x21);
+    EPD_SendData(0x40);
+    EPD_SendData(0x00);
+    EPD_SendCommand(0x3C);
+    EPD_SendData(0x05);
+    EPD_SendCommand(0x11);
+    EPD_SendData(0x03);
+    EPD_SetWindows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
+    EPD_SetCursor(0, 0);
+    return epdStatus == HAL_OK;
+}
 
 /******************************************************************************
 function :	Clear screen
@@ -242,6 +317,7 @@ parameter:
 ******************************************************************************/
 void EPD_Clear(void)
 {
+    if (!EPD_PrepareFull()) return;
     uint32_t Width, Height;
     Width = (EPD_WIDTH % 8 == 0)? (EPD_WIDTH / 8 ): (EPD_WIDTH / 8 + 1);
     Height = EPD_HEIGHT;
@@ -253,6 +329,7 @@ void EPD_Clear(void)
         }
     }
 
+    EPD_SetCursor(0, 0);
     EPD_SendCommand(0x26);
     for (uint32_t j = 0; j < Height; j++) {
         for (uint32_t i = 0; i < Width; i++) {
@@ -260,74 +337,90 @@ void EPD_Clear(void)
         }
     }
     EPD_TurnOnDisplay();
+    epdBaseReady = (epdStatus == HAL_OK);
 }
 
 
 void EPD_Sleep()
 {
+    // 失败时仍尝试发出休眠命令，但保留原始错误供调用方查询。
+    const HAL_StatusTypeDef previous = epdStatus;
+    epdStatus = HAL_OK;
+    epdInitialized = false;
+    epdBaseReady = false;
     EPD_SendCommand(0x10); // DEEP_SLEEP
     EPD_SendData(0x01);
     HAL_Delay(200);
+    if (previous != HAL_OK) epdStatus = previous;
 }
 
 
-void EPD_PartialDisplay(uint8_t *Image, uint32_t Xstart, uint32_t Ystart, uint32_t Xend, uint32_t Yend)
+static bool EPD_ValidWindow(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
 {
-    if((Xstart % 8 + Xend % 8 == 8 && Xstart % 8 > Xend % 8) || Xstart % 8 + Xend % 8 == 0 || (Xend - Xstart)%8 == 0)
-    {
-        Xstart = Xstart / 8 ;
-        Xend = Xend / 8;
-    }
-    else
-    {
-        Xstart = Xstart / 8 ;
-        Xend = Xend % 8 == 0 ? Xend / 8 : Xend / 8 + 1;
-    }
-    
+    return x < EPD_WIDTH && y < EPD_HEIGHT && width > 0 && height > 0 &&
+           width <= EPD_WIDTH - x && height <= EPD_HEIGHT - y &&
+           (x % 8) == 0 && (width % 8) == 0;
+}
 
-    uint32_t i, Width;
-    Width = Xend -  Xstart;
-    uint32_t IMAGE_COUNTER = Width * (Yend-Ystart);
-
-    Xend -= 1;
-    Yend -= 1;	
-
-
-    EPD_SendCommand(0x21); 
-    EPD_SendData(0x00);
-    EPD_SendData(0x00);
-
-    EPD_SendCommand(0x3C); 
-    EPD_SendData(0x80); 
-
-    EPD_SendCommand(0x11);	// data  entry  mode
-    EPD_SendData(0x03);		// X-mode  
-
-    EPD_SendCommand(0x44);       // set RAM x address start/end, in page 35
-    EPD_SendData(Xstart & 0xff);    // RAM x address start at 00h;
-    EPD_SendData(Xend & 0xff);    // RAM x address end at 0fh(15+1)*8->128 
-    EPD_SendCommand(0x45);       // set RAM y address start/end, in page 35
-    EPD_SendData(Ystart & 0xff);    // RAM y address start at 0127h;
-    EPD_SendData((Ystart>>8) & 0x01);    // RAM y address start at 0127h;
-    EPD_SendData(Yend & 0xff);    // RAM y address end at 00h;
-    EPD_SendData((Yend>>8) & 0x01); 
-
-    EPD_SendCommand(0x4E);   // set RAM x address count to 0;
-    EPD_SendData(Xstart & 0xff); 
-    EPD_SendCommand(0x4F);   // set RAM y address count to 0X127;    
-    EPD_SendData(Ystart & 0xff);
-    EPD_SendData((Ystart>>8) & 0x01);
-
+// Image 指向区域第一行的首字节，stride 是源图每行的字节数。
+static HAL_StatusTypeDef EPD_WritePartial(const uint8_t *Image, uint32_t stride,
+                                         uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+    if (epdStatus != HAL_OK) return epdStatus;
+    if (!epdInitialized || !epdBaseReady) return HAL_ERROR;
     EPD_ReadBusy();
-
-    
-	
+    EPD_SendCommand(0x21);
+    EPD_SendData(0x00);
+    EPD_SendCommand(0x3C);
+    EPD_SendData(0x80);
+    // 采用该面板参考局刷 LUT 的行时序；不改电压、复位或整屏初始化。
+    EPD_SendCommand(0x3A);
+    EPD_SendData(0x21);
+    EPD_SendCommand(0x3B);
+    EPD_SendData(0x06);
+    EPD_SendCommand(0x32);
+    for (uint8_t value : EPD_PARTIAL_LUT) EPD_SendData(value);
+    EPD_SendCommand(0x11);
+    EPD_SendData(0x03);
+    EPD_SetWindows(x, y, x + width - 1, y + height - 1);
+    EPD_SetCursor(x, y);
     EPD_SendCommand(0x24);
-    for (uint32_t j = 0; j < IMAGE_COUNTER; j++) {
-        EPD_SendData(Image[j]);
+    for (uint32_t row = 0; row < height && epdStatus == HAL_OK; ++row) {
+        for (uint32_t col = 0; col < width / 8 && epdStatus == HAL_OK; ++col) {
+            EPD_SendData(Image[row * stride + col]);
+        }
     }
-	
     EPD_TurnOnDisplay_Partial();
+    // BUSY 结束后才同步该窗口的参考 RAM。下一次局刷时，未变化像素
+    // 对应 BB/WW；只写控制器 RAM，不触发第二次刷新、不增加 MCU 帧缓冲。
+    if (epdStatus == HAL_OK) {
+        EPD_SetCursor(x, y);
+        EPD_SendCommand(0x26);
+        for (uint32_t row = 0; row < height && epdStatus == HAL_OK; ++row) {
+            for (uint32_t col = 0; col < width / 8 && epdStatus == HAL_OK; ++col) {
+                EPD_SendData(Image[row * stride + col]);
+            }
+        }
+    }
+    return epdStatus;
+}
+
+HAL_StatusTypeDef EPD_DisplayPartial(const uint8_t *Image, uint16_t x, uint16_t y,
+                                     uint16_t width, uint16_t height)
+{
+    if (!Image || !EPD_ValidWindow(x, y, width, height)) return HAL_ERROR;
+    return EPD_WritePartial(Image + y * (EPD_WIDTH / 8) + x / 8,
+                            EPD_WIDTH / 8, x, y, width, height);
+}
+
+HAL_StatusTypeDef EPD_PartialDisplay(uint8_t *Image, uint32_t Xstart, uint32_t Ystart,
+                                    uint32_t Xend, uint32_t Yend)
+{
+    // 保留旧入口的紧密局部图像和右下角排除语义，拒绝无效范围。
+    if (!Image || Xend <= Xstart || Yend <= Ystart ||
+        !EPD_ValidWindow(Xstart, Ystart, Xend - Xstart, Yend - Ystart)) return HAL_ERROR;
+    return EPD_WritePartial(Image, (Xend - Xstart) / 8,
+                            Xstart, Ystart, Xend - Xstart, Yend - Ystart);
 }
 
 
@@ -338,6 +431,8 @@ parameter:
 #if !EPD_Fast_Mode
 void EPD_Display(uint8_t *Image)
 {
+    if (!Image) { epdStatus = HAL_ERROR; return; }
+    if (!EPD_PrepareFull()) return;
     uint32_t Width, Height;
     Width = (EPD_WIDTH % 8 == 0)? (EPD_WIDTH / 8 ): (EPD_WIDTH / 8 + 1);
     Height = EPD_HEIGHT;
@@ -349,6 +444,7 @@ void EPD_Display(uint8_t *Image)
         }
     }
 
+    EPD_SetCursor(0, 0);
     EPD_SendCommand(0x26);
     for (uint32_t j = 0; j < Height; j++) {
         for (uint32_t i = 0; i < Width; i++) {
@@ -356,10 +452,13 @@ void EPD_Display(uint8_t *Image)
         }
     }
     EPD_TurnOnDisplay();
+    epdBaseReady = (epdStatus == HAL_OK);
 }
 
 #else
 void EPD_Display(uint8_t *Image) {
+    if (!Image) { epdStatus = HAL_ERROR; return; }
+    if (!EPD_PrepareFull()) return;
     uint32_t Width, Height;
     Width = (EPD_WIDTH % 8 == 0)? (EPD_WIDTH / 8 ): (EPD_WIDTH / 8 + 1);
     Height = EPD_HEIGHT;
@@ -371,6 +470,7 @@ void EPD_Display(uint8_t *Image) {
         }
     }
 
+    EPD_SetCursor(0, 0);
     EPD_SendCommand(0x26);
     for (uint32_t j = 0; j < Height; j++) {
         for (uint32_t i = 0; i < Width; i++) {
@@ -378,6 +478,7 @@ void EPD_Display(uint8_t *Image) {
         }
     }
     EPD_TurnOnDisplay_Fast();
+    epdBaseReady = (epdStatus == HAL_OK);
 }
 #endif
 
