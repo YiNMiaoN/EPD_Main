@@ -10,11 +10,12 @@
 
 
 class EPD : public Adafruit_GFX{
-private:
+protected:
     uint8_t EPD_GRam[EPD_WIDTH * EPD_HEIGHT / 8]={};
 
 
 public:
+
     EPD();
     ~EPD();
     void drawPixel(int16_t x, int16_t y, uint16_t color) override;

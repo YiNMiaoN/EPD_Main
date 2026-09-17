@@ -23,7 +23,7 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
-#include "usb_otg.h"
+#include "usb_device.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -31,7 +31,10 @@
 #include "Epd_Api.h"
 #include "Uart_OTA.h"
 #include "Uart_RTX.h"
+#include "Esp_Com.h"
+#include "ApiRefresh.h"
 #include "shell.h"
+#include "usbd_cdc_if.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -110,16 +113,16 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM3_Init();
   MX_SPI2_Init();
-  MX_USB_OTG_FS_PCD_Init();
+  MX_USB_DEVICE_Init();
+  MX_TIM10_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(ESP_RST_GPIO_Port,ESP_RST_Pin,GPIO_PIN_SET);
+  EspCom_Init();
 
 
 
-  // EPD_HW_Display();
-  // EPD_HW_Sleep();
+
   if(flash_rw) {
-
     EPD_Flash_Init();
     EPD_Flash_Test();
     Uart_Init_DMA();
@@ -127,6 +130,12 @@ int main(void)
     EPD_HW_Init();
     EPD_HW_Clear();
     shell_Init();
+    ApiRefresh_Init();
+    __HAL_TIM_SET_COUNTER(&htim10, 0);
+    __HAL_TIM_CLEAR_FLAG(&htim10, TIM_FLAG_UPDATE);
+    if (HAL_TIM_Base_Start_IT(&htim10) != HAL_OK) {
+      Error_Handler();
+    }
   }
 
 
@@ -135,17 +144,19 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  static uint32_t last_tick = 0;
   while (1)
   {
     if (flash_rw) {
       UART_DMA_Poll();
       Uart_OTA_Rx();
     }else {
+      EspCom_Poll();
+      ApiRefresh_Poll();
+      EPD_UI_Poll();
       shellTask(&shell);
 
     }
-
-
 
     /* USER CODE END WHILE */
 

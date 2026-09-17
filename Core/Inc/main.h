@@ -73,10 +73,10 @@ void Error_Handler(void);
 #define SPI1_DC_GPIO_Port GPIOC
 #define SPI1_RES_Pin GPIO_PIN_5
 #define SPI1_RES_GPIO_Port GPIOC
-#define ESP_EO_Pin GPIO_PIN_0
-#define ESP_EO_GPIO_Port GPIOB
-#define ESP_EI_Pin GPIO_PIN_1
-#define ESP_EI_GPIO_Port GPIOB
+#define STM32_Ready_Pin GPIO_PIN_0
+#define STM32_Ready_GPIO_Port GPIOB
+#define ESP_Ready_Pin GPIO_PIN_1
+#define ESP_Ready_GPIO_Port GPIOB
 #define SPI2_NSS_Pin GPIO_PIN_12
 #define SPI2_NSS_GPIO_Port GPIOB
 #define SPI2_RES_Pin GPIO_PIN_13

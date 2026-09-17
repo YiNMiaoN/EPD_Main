@@ -3,6 +3,7 @@
 //
 
 #include "Uart_RTX.h"
+#include "Esp_Com.h"
 
 
 extern Fifo_Type Fifo_Uart_Rx;
@@ -27,7 +28,11 @@ void Uart_Rx_CCB_TI(UART_HandleTypeDef *huart) {
 }
 //测试中断
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    Uart_Rx_CCB_TI(huart);
+    if (huart->Instance == USART2) {
+        EspCom_UartRxCpltCallback(huart);
+    } else {
+        Uart_Rx_CCB_TI(huart);
+    }
 }
 
 

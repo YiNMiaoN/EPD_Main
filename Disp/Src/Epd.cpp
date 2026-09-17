@@ -6,6 +6,7 @@
 #include "Flash.h"
 #include "unicode_gbk_map.h"
 #include "Font.h"
+#include "QWeather_Icon.h"
 
 
 EPD::EPD()
@@ -38,6 +39,9 @@ void EPD::init() {
 }
 
 void EPD::clear() {
+    for (uint32_t i = 0; i < sizeof(EPD_GRam); i++) {
+        EPD_GRam[i] = 0xFF;
+    }
     EPD_Clear();
     HAL_Delay(10);
 }
@@ -114,18 +118,14 @@ void EPD::drawChineseString(int16_t x, int16_t y, const char* text, FontSize siz
 
 
 void EPD::updata_ui() {
-    drawChineseString(0,0,"中",FONT_SIZE_24);
-    drawChineseString(0,24,"是一种基于堆数据结构实现的高效AAA算法",FONT_SIZE_16);
+
 }
 
 
 void EPD::refresh() {
-    updata_ui();
-    HAL_Delay(10);
     EPD_Display(EPD_GRam);
 }
 
 void EPD::sleep() {
-
+    EPD_Sleep();
 }
-
